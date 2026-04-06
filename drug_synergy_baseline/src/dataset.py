@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
 from .data_loading import load_expression_lookup, load_synergy_table
+
+
+def _stable_bucket(token: str, dim: int) -> int:
+    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big") % dim
 
 
 def smiles_to_vector(smiles: str, dim: int = 256) -> np.ndarray:
@@ -19,8 +26,8 @@ def smiles_to_vector(smiles: str, dim: int = 256) -> np.ndarray:
     for idx, ch in enumerate(chars):
         vector[(ord(ch) + idx) % dim] += 1.0
         if idx + 1 < len(chars):
-            pair_hash = hash((ch, chars[idx + 1])) % dim
-            vector[pair_hash] += 0.5
+            pair_token = f"{idx}:{ch}{chars[idx + 1]}"
+            vector[_stable_bucket(pair_token, dim)] += 0.5
 
     norm = np.linalg.norm(vector)
     if norm > 0:
@@ -35,6 +42,9 @@ class DatasetBundle:
     test: Dataset
     gene_dim: int
     drug_dim: int
+    train_rows: pd.DataFrame
+    val_rows: pd.DataFrame
+    test_rows: pd.DataFrame
 
 
 class DrugSynergyDataset(Dataset):
@@ -113,4 +123,7 @@ def build_datasets(
         test=test_dataset,
         gene_dim=train_dataset.gene_dim,
         drug_dim=smiles_dim,
+        train_rows=train_rows.reset_index(drop=True),
+        val_rows=val_rows.reset_index(drop=True),
+        test_rows=test_rows.reset_index(drop=True),
     )

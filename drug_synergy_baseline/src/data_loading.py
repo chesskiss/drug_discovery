@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,3 +111,33 @@ def load_expression_lookup(
         "Could not load cell expression features. Expected `data/cell_line_gene_expression.csv` "
         "or a fallback pickle with embedded cell features."
     )
+
+
+def get_cellline_array_lengths(value: object) -> list[int]:
+    if isinstance(value, (list, tuple)):
+        return [len(np.asarray(item)) for item in value]
+
+    if isinstance(value, str):
+        if "..." in value:
+            raise ValueError("CellLine CSV text is truncated with ellipsis; use the pickle-backed row instead.")
+        parsed = ast.literal_eval(value)
+        if isinstance(parsed, (list, tuple)):
+            return [len(np.asarray(item)) for item in parsed]
+
+    raise TypeError("Unsupported CellLine value; expected a list/tuple of arrays or a non-truncated string.")
+
+
+def get_first_cellline_array_lengths(
+    csv_path: str | Path,
+    pickle_path: str | Path | None = None,
+) -> list[int]:
+    csv_df = pd.read_csv(csv_path, nrows=1)
+    first_value = csv_df.iloc[0]["CellLine"]
+
+    try:
+        return get_cellline_array_lengths(first_value)
+    except ValueError:
+        if pickle_path is None:
+            raise
+        pickle_df = load_table(pickle_path)
+        return get_cellline_array_lengths(pickle_df.iloc[0]["CellLine"])

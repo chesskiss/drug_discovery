@@ -22,6 +22,18 @@ uv run python -m <module>
 uv run python -m src.train --synergy-path data/drugcomb_synergy.csv --output-dir outputs
 ```
 
+Run single-sample prediction with:
+
+```bash
+uv run python -m src.predict --row-idx 0
+```
+
+or
+
+```bash
+uv run python -m src.predict --smiles-a "..." --smiles-b "..." --cell-line "786-0"
+```
+
 ## Existing utilities
 
 ### Visualize data

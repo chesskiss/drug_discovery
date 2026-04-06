@@ -36,3 +36,17 @@ class DeepSynergyMLP(nn.Module):
     ) -> torch.Tensor:
         features = torch.cat([drug_a, drug_b, gene_expr], dim=-1)
         return self.network(features).squeeze(-1)
+
+
+def build_baseline_model(
+    drug_dim: int,
+    gene_dim: int,
+    hidden_dims: list[int] | tuple[int, ...],
+    dropout: float,
+) -> DeepSynergyMLP:
+    return DeepSynergyMLP(
+        drug_dim=drug_dim,
+        gene_dim=gene_dim,
+        hidden_dims=tuple(hidden_dims),
+        dropout=dropout,
+    )
