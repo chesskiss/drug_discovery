@@ -45,3 +45,4 @@ htmlcov/
 # Project-generated outputs
 drug_synergy_baseline/outputs/
 drug_synergy_baseline/outputs_smoke/
+cell_line_difficulty/outputs/
