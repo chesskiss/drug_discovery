@@ -154,6 +154,74 @@ Interpretation:
 - it is an observational screen-level heuristic
 - it mixes cell-line susceptibility with which drugs and combinations were tested
 
+### 4. Cell-line-only predictive model
+
+Built a predictive model on top of the cell-line-only difficulty target.
+
+Purpose:
+
+- use cell-line features only
+- predict how easy it may be to find synergistic drug combinations for that cell line
+
+Inputs:
+
+- target source: `data/drugcomb_synergy.csv`
+- feature source: `data/drugcomb.pkl`
+- feature view used: `CellLine[1]`
+- feature dimension: `3171`
+
+Modeling setup:
+
+- one supervised sample per cell line
+- total samples: `59`
+- target: composite `ease_score`
+- evaluation: LOOCV
+- models compared:
+  - ridge regression
+  - tiny MLP
+  - fold-mean baseline
+
+Run command:
+
+```bash
+python3 -m cell_line_difficulty.src.cell_line_difficulty.predict_cli --synergy-path drug_synergy_baseline/data/drugcomb_synergy.csv --pickle-path drug_synergy_baseline/data/drugcomb.pkl --output-dir cell_line_difficulty/outputs
+```
+
+Relevant outputs:
+
+- `../cell_line_difficulty/outputs/predictive_dataset.csv`
+- `../cell_line_difficulty/outputs/loocv_predictions.csv`
+- `../cell_line_difficulty/outputs/predictive_metrics.json`
+
+Current predictive metrics from `../cell_line_difficulty/outputs/predictive_metrics.json`:
+
+- `sample_count = 59`
+- `feature_dimension = 3171`
+- `ridge rmse = 0.7631`
+- `ridge mae = 0.6001`
+- `ridge pearson = 0.5094`
+- `ridge spearman = 0.3778`
+- `mlp rmse = 0.8370`
+- `fold-mean baseline rmse = 0.9006`
+
+How to interpret this:
+
+- the target `ease_score` has `std ≈ 0.893`
+- so `rmse = 0.7631` is not small in an absolute sense
+- however, ridge improves over the baseline:
+  - `0.9006 -> 0.7631`
+- this suggests the filtered cell-line features contain real predictive signal
+- ridge outperforming the tiny MLP is expected here:
+  - only `59` samples
+  - high-dimensional input
+  - linear regularization is more stable
+
+Important caution:
+
+- the fold-mean baseline correlation is not meaningful in LOOCV
+- because the leave-one-out training mean is mechanically anti-correlated with the held-out target
+- RMSE/MAE are the more useful comparison here
+
 ## Immediate Research Questions
 
 ### 1. Baseline quality
@@ -176,6 +244,14 @@ The main research direction remains:
 - better compression of gene expression
 - without losing biological meaning
 - while improving downstream synergy prediction
+
+### 4. Cell-line-only predictor value
+
+- Can the filtered `3171`-feature view predict screening difficulty better than a trivial baseline?
+- Does this remain true if the target is changed from composite `ease_score` to:
+  - mean ZIP
+  - high-hit rate (`ZIP > 10`)?
+- Is the signal biological, or mostly a consequence of how the screen was designed?
 
 ## Planned Next Steps
 
@@ -233,6 +309,7 @@ Open issues:
 - baseline pipeline implemented
 - prediction CLI implemented
 - cell-line-only difficulty module implemented
+- cell-line-only predictive model implemented and tested
 
 ### In progress
 
@@ -269,4 +346,6 @@ Open issues:
 - Visual summaries: `outputs/visualization/`
 - Cell-line analysis module: `../cell_line_difficulty/`
 - Cell-line analysis outputs: `../cell_line_difficulty/outputs/`
-
+- Predictive metrics: `../cell_line_difficulty/outputs/predictive_metrics.json`
+- Predictive dataset: `../cell_line_difficulty/outputs/predictive_dataset.csv`
+- Predictive LOOCV predictions: `../cell_line_difficulty/outputs/loocv_predictions.csv`

@@ -5,8 +5,8 @@
 Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 
 ## Strategies
-- Use weak baseline and improve/replace compression methods of celline genes. Should see better improvement in compariosn to SOTA models.
-- 
+- Use weak baseline and improve/replace compression methods of celline genes. Should see better improvement in compariosn to SOTA models. 
+- Naive compression (627) vs my compression plan - then add to weak baseline
 
 ## Done
 
@@ -43,9 +43,24 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
   - easiest examples: `HL-60(TB)`, `MOLT-4`
   - hardest examples: `UO-31`, `HOP-92`
 
+### 4. Cell-line-only predictive model
+
+- Built a predictive dataset with:
+  - `59` cell lines
+  - `3171` filtered cell-line features
+  - target = composite `ease_score`
+- Ran LOOCV:
+  - ridge `rmse = 0.7631`
+  - tiny MLP `rmse = 0.8370`
+  - fold-mean baseline `rmse = 0.9006`
+- Brief take:
+  - ridge is best so far
+  - there is predictive signal in the cell-line features
+  - performance is still moderate, not strong
+
 ## Next
 
-### 4. Baseline diagnosis
+### 5. Baseline diagnosis
 
 - Re-check baseline quality:
   - compare against naive mean baseline
@@ -54,7 +69,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Results:
   - `________________`
 
-### 5. Step 1B: modular gene encoder
+### 6. Step 1B: modular gene encoder
 
 - Replace raw `gene_expr` with:
   - `z_cell = encoder(gene_expr)`
@@ -64,7 +79,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Results:
   - `________________`
 
-### 6. Gene filtering idea
+### 7. Gene filtering idea
 
 - Test filtering genes with value `> 2.3`
 - Keep both:
@@ -79,7 +94,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Results:
   - `________________`
 
-### 7. Compression baselines
+### 8. Compression baselines
 
 - Compare:
   - simple filtering + MLP
@@ -89,7 +104,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Results:
   - `________________`
 
-### 8. Longer-term
+### 9. Longer-term
 
 - Map gene indices to gene names
 - Add biological priors:
@@ -98,4 +113,3 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Aim for:
   - better performance
   - more biologically meaningful embeddings
-

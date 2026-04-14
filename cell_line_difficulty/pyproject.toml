@@ -1,0 +1,10 @@
+[project]
+name = "cell-line-difficulty"
+version = "0.1.0"
+description = "Cell-line-only DrugComb synergy difficulty analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scikit-learn",
+]
