@@ -19,7 +19,7 @@ Current pipeline id:
 
 - `zscore_var_pca_128`
 
-Implemented pipeline:
+### Implemented pipeline:
 
 1. start from raw `CellLine[0]` with `23808` dimensions
 2. rank raw features by variance
@@ -28,7 +28,7 @@ Implemented pipeline:
 5. run PCA
 6. export a baseline-compatible `drugcomb.csv`
 
-Important constraint:
+### Important constraint:
 
 - this dataset currently has only `59` unique cell lines
 - so PCA cannot yield `128` informative components

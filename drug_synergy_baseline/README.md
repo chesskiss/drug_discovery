@@ -90,12 +90,19 @@ The training entrypoint now supports:
 - `--use-gene-expression` or `--no-use-gene-expression`
 - `--gene-feature-set raw|filtered|compact`
 - `--cell-feature-view 0|1|2`
-- `--split-strategy random|cell_line|drug|drug_pair`
+- `--split-strategy random|cell_line|drug|drug_pair|drug_and_cell_line`
 - `--cv-folds <k>`
 - `--cv-seeds <seed ...>`
 - `--stratified-cv`
 - `--train-fraction`, `--val-fraction`
 - `--max-samples`
+
+Cross-validation supports:
+
+- `--split-strategy random`
+- `--split-strategy drug_and_cell_line`
+
+For `drug_and_cell_line`, CV is group-aware repeated holdout rather than classic row-disjoint CV.
 
 ### Fastest first runs
 
@@ -142,8 +149,15 @@ Compare held-out split strategies:
 uv run python -m src.train --output-dir outputs/split_random --split-strategy random --cell-feature-view 1 --epochs 10 --seed 42
 uv run python -m src.train --output-dir outputs/split_cell_line --split-strategy cell_line --cell-feature-view 1 --epochs 10 --seed 42
 uv run python -m src.train --output-dir outputs/split_drug --split-strategy drug --cell-feature-view 1 --epochs 10 --seed 42
+uv run python -m src.train --output-dir outputs/split_drug_and_cell_line --split-strategy drug_and_cell_line --cell-feature-view 1 --epochs 10 --seed 42
 uv run python -m src.train --output-dir outputs/split_drug_pair --split-strategy drug_pair --cell-feature-view 1 --epochs 10 --seed 42
 ```
+
+For `drug_and_cell_line`, rows are routed with `test > val > train` priority:
+
+- if either drug or the cell line is in the test bucket, the row goes to test
+- else if either drug or the cell line is in the val bucket, the row goes to val
+- else the row goes to train
 
 Run 10-fold CV on a smaller subset first:
 
@@ -154,6 +168,19 @@ uv run python -m src.train \
   --cell-feature-view 1 \
   --cv-folds 10 \
   --stratified-cv \
+  --cv-seeds 42 \
+  --max-samples 10000 \
+  --epochs 5
+```
+
+Run group-aware drug + cell-line CV on a smaller subset:
+
+```bash
+uv run python -m src.train \
+  --output-dir outputs/cv10_drug_and_cell_line_10k \
+  --split-strategy drug_and_cell_line \
+  --cell-feature-view 1 \
+  --cv-folds 10 \
   --cv-seeds 42 \
   --max-samples 10000 \
   --epochs 5

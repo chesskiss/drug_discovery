@@ -2,145 +2,138 @@
 
 ## Objective
 
-Main objective: improve the gene expression encoder for drug synergy prediction, with emphasis on compression quality and biological relevance.
+Main objective: improve the gene-expression / cell-line encoder for drug synergy prediction while keeping the downstream baseline controlled.
 
 Current strategy:
 
-1. Get a working end-to-end baseline
-2. Replace only the gene expression branch
-3. Compare encoder variants while keeping the downstream pipeline fixed
+1. Build a reproducible weak baseline.
+2. Quantify whether genes help before changing the gene encoder.
+3. Compare random, unseen-drug, unseen-cell-line, and combined unseen-drug + unseen-cell-line splits.
+4. Compress or replace the gene branch only after the baseline behavior is understood.
+5. Reverse-engineer the trained MLP to identify which gene inputs or compressed components affect predictions.
 
-Current stage map:
+## Stage Map
 
-- `Stage 1.0`: data grounding and initial pipeline validation
+- `Stage 1.0`: data grounding and initial baseline pipeline
 - `Stage 1.1`: baseline variant diagnostics
+- `Stage 1.1A`: canonical results tracking and short split matrix
+- `Stage 1.1B`: group-aware drug + cell-line CV
 - `Stage 1.2`: modular gene encoder replacement
 - `Stage 1.3`: compression baseline comparisons
 - `Stage 1.3A`: `z-score -> variance top-k -> PCA128` export pipeline
+- `Stage 1.4`: MLP reverse-engineering and attribution
 
 ## Dataset Notes
 
-Primary dataset:
+Primary data sources:
 
 - `data_compression/zscore_var_pca_128/data/drugcomb_raw.csv`
+- `data_compression/zscore_var_pca_128/data/drugcomb.csv`
 - `drug_synergy_baseline/data/drugcomb.pkl`
 
-Primary target:
+Main target:
 
 - `Synergy_ZIP`
 
 Why ZIP:
 
 - standard synergy target
-- reasonably balanced compared with some alternatives
 - appropriate first regression label
+- keeps the task comparable across baseline variants
 
-Important columns in the synergy table:
+Important columns:
 
 - `Drug1_ID`: drug A identifier
 - `Drug2_ID`: drug B identifier
-- `Cell_Line_ID`: cell line name / ID
-- `CSS`: combination sensitivity score
-- `Synergy_ZIP`: main regression label
-- `Synergy_Bliss`: alternative synergy metric
-- `Synergy_Loewe`: alternative synergy metric
-- `Synergy_HSA`: alternative synergy metric
-- `Drug1`: SMILES string for drug A
-- `Drug2`: SMILES string for drug B
+- `Cell_Line_ID`: cell-line ID
+- `Drug1`: SMILES for drug A
+- `Drug2`: SMILES for drug B
 - `CellLine`: embedded cell-line feature payload
+- `Synergy_ZIP`: main regression target
+- `Synergy_Bliss`, `Synergy_Loewe`, `Synergy_HSA`: alternative synergy targets
 
-Current layout note:
-
-- `drugcomb_raw.csv` is the raw export file kept under `data_compression/`
-- `drugcomb.pkl` is the non-truncated source for embedded `CellLine` arrays
-- future compressed exports are written as `data_compression/.../data/drugcomb.csv` and can then be moved into baseline `data/`
-
-## CellLine Interpretation
-
-The `CellLine` payload contains 3 aligned views of the same cell line representation.
-
-Current confirmed lengths:
+Confirmed `CellLine` views:
 
 - `23808`: raw/high-dimensional view
-- `3171`: filtered/compressed view
-- `627`: smaller pathway-like / summarized view
+- `3171`: filtered view
+- `627`: compact/pathway-like view
 
-Interpretation for now:
+Important constraint:
 
-- same index should correspond to the same gene/feature across samples
-- `2.3` appears often and may represent a floor / low-expression value
-- this suggests a future sparse or threshold-based encoding path may be useful
+- the dataset has many synergy rows but only `59` unique cell lines
+- this makes raw high-dimensional gene input easy to overfit
+- this also means PCA128 cannot have 128 fully informative independent components
 
-## What We Implemented
+## Completed Work
 
-### Stage 1.0A. Minimal baseline pipeline
+### Stage 1.0A. Minimal Baseline Pipeline
 
-Implemented a DeepSynergy-style baseline in `src/`:
+Implemented a DeepSynergy-style baseline in `drug_synergy_baseline/src/`.
+
+Inputs:
 
 - drug A features
 - drug B features
-- raw gene expression vector
-- concatenation
-- MLP predictor
+- optional gene-expression/cell-line vector
+
+Model:
+
+- concatenate inputs
+- MLP regression head
+- target = `Synergy_ZIP`
 
 Relevant files:
 
-- `src/data_loading.py`
-- `src/dataset.py`
-- `src/model.py`
-- `src/train.py`
-- `src/predict.py`
+- `drug_synergy_baseline/src/data_loading.py`
+- `drug_synergy_baseline/src/dataset.py`
+- `drug_synergy_baseline/src/model.py`
+- `drug_synergy_baseline/src/train.py`
+- `drug_synergy_baseline/src/predict.py`
 
 What this achieved:
 
 - training works end-to-end
 - prediction works for a single sample
-- dataset loading is based on TDC DrugComb data, not MatchMaker preprocessing
+- dataset loading is based on TDC DrugComb
+- MatchMaker/SOTA code is separated from the baseline direction
 
-Stored outputs:
+Initial raw-gene baseline:
 
-- `outputs/baseline_mlp.pt`
-- `outputs/config.json`
-- `outputs/metrics.json`
-- `outputs/val_predictions.csv`
+- train samples: `237678`
+- validation samples: `29709`
+- test samples: `29711`
+- drug feature dim: `256`
+- gene dim: `23808`
+- test MSE: `29.0515`
+- test RMSE: `5.3899`
 
-Current baseline metrics from `outputs/metrics.json`:
+Interpretation:
 
-- `train_samples = 237678`
-- `val_samples = 29709`
-- `test_samples = 29711`
-- `drug_dim = 256`
-- `gene_dim = 23808`
-- `test_mse = 29.0515`
-- `test_rmse = 5.3899`
+- the raw-gene baseline is functional but weak
+- predictions collapsed toward an almost constant output
+- this motivated explicit gene compression and stronger diagnostics
 
-Important note:
+### Stage 1.0B. Visualization / Data Inspection
 
-- current baseline is functional, but performance is not yet clearly better than a trivial baseline
-- this is acceptable for `Stage 1.0` because the main goal was pipeline validation
+Generated visual inspection artifacts for target distribution and dataset structure.
 
-### Stage 1.0B. Visualization / data inspection
-
-Relevant outputs:
+Earlier relevant outputs:
 
 - `outputs/visualization/summary.json`
 - `outputs/visualization/target_distribution.png`
 - `outputs/visualization/top_cells.png`
 - `outputs/visualization/top_pair_frequency_hist.png`
 
-Figures:
+Current direction:
 
-![Target Distribution](outputs/visualization/target_distribution.png)
+- data visualization and manipulation scripts belong under `data_compression/`, not under `drug_synergy_baseline/src/`
+- model outputs stay under `drug_synergy_baseline/outputs/`
 
-![Top Cells](outputs/visualization/top_cells.png)
-
-![Top Pair Frequency](outputs/visualization/top_pair_frequency_hist.png)
-
-### Stage 1.0C. Cell-line-only difficulty analysis
+### Stage 1.0C. Cell-Line-Only Difficulty Analysis
 
 Implemented a separate module:
 
-- `../cell_line_difficulty/`
+- `cell_line_difficulty/`
 
 Purpose:
 
@@ -148,144 +141,172 @@ Purpose:
 - aggregate observed ZIP values per cell line
 - estimate which cell lines appear easier or harder to find synergistic combinations for
 
-Relevant outputs:
-
-- `../cell_line_difficulty/outputs/ranked_by_ease.csv`
-- `../cell_line_difficulty/outputs/ranked_by_difficulty.csv`
-- `../cell_line_difficulty/outputs/summary.json`
-
 Current summary:
 
 - total rows analyzed: `297098`
 - total cell lines: `59`
-- easiest examples: `HL-60(TB)`, `MOLT-4`, `NCI-H460`
-- hardest examples: `UO-31`, `HOP-92`, `MDA-MB-231`
+- easier examples: `HL-60(TB)`, `MOLT-4`, `NCI-H460`
+- harder examples: `UO-31`, `HOP-92`, `MDA-MB-231`
 
 Interpretation:
 
-- this is not true biological “treatability”
-- it is an observational screen-level heuristic
-- it mixes cell-line susceptibility with which drugs and combinations were tested
+- this is not true biological treatability
+- it mixes cell-line susceptibility with which drugs/combinations were tested
+- it remains useful as a diagnostic side analysis
 
-### Stage 1.0D. Cell-line-only predictive model
+### Stage 1.0D. Cell-Line-Only Predictive Model
 
-Built a predictive model on top of the cell-line-only difficulty target.
+Built a small predictive model for cell-line screening difficulty.
 
-Purpose:
-
-- use cell-line features only
-- predict how easy it may be to find synergistic drug combinations for that cell line
-
-Inputs:
-
-- target source: `drug_synergy_baseline/data/drugcomb.csv`
-- feature source: non-truncated `CellLine` payload source
-- feature view used: `CellLine[1]`
-- feature dimension: `3171`
-
-Modeling setup:
+Setup:
 
 - one supervised sample per cell line
 - total samples: `59`
+- feature view: `CellLine[1]`
+- feature dimension: `3171`
 - target: composite `ease_score`
 - evaluation: LOOCV
-- models compared:
-  - ridge regression
-  - tiny MLP
-  - fold-mean baseline
 
-Run command:
+Current metrics:
 
-```bash
-python3 -m cell_line_difficulty.src.cell_line_difficulty.predict_cli --synergy-path drug_synergy_baseline/data/drugcomb.csv --pickle-path drug_synergy_baseline/data/drugcomb.pkl --output-dir cell_line_difficulty/outputs
-```
+- ridge RMSE: `0.7631`
+- ridge MAE: `0.6001`
+- ridge Pearson: `0.5094`
+- ridge Spearman: `0.3778`
+- tiny MLP RMSE: `0.8370`
+- fold-mean baseline RMSE: `0.9006`
 
-Relevant outputs:
+Interpretation:
 
-- `../cell_line_difficulty/outputs/predictive_dataset.csv`
-- `../cell_line_difficulty/outputs/loocv_predictions.csv`
-- `../cell_line_difficulty/outputs/predictive_metrics.json`
+- filtered cell-line features contain some signal
+- ridge outperforming tiny MLP is expected with only `59` samples
+- RMSE/MAE are more meaningful than fold-mean baseline correlation in LOOCV
 
-Current predictive metrics from `../cell_line_difficulty/outputs/predictive_metrics.json`:
-
-- `sample_count = 59`
-- `feature_dimension = 3171`
-- `ridge rmse = 0.7631`
-- `ridge mae = 0.6001`
-- `ridge pearson = 0.5094`
-- `ridge spearman = 0.3778`
-- `mlp rmse = 0.8370`
-- `fold-mean baseline rmse = 0.9006`
-
-How to interpret this:
-
-- the target `ease_score` has `std ≈ 0.893`
-- so `rmse = 0.7631` is not small in an absolute sense
-- however, ridge improves over the baseline:
-  - `0.9006 -> 0.7631`
-- this suggests the filtered cell-line features contain real predictive signal
-- ridge outperforming the tiny MLP is expected here:
-  - only `59` samples
-  - high-dimensional input
-  - linear regularization is more stable
-
-Important caution:
-
-- the fold-mean baseline correlation is not meaningful in LOOCV
-- because the leave-one-out training mean is mechanically anti-correlated with the held-out target
-- RMSE/MAE are the more useful comparison here
-
-## Current Stage
-
-### Stage 1.1. Baseline variant diagnostics
-
-This is the current step before any new gene-compression model is introduced.
+## Stage 1.1. Baseline Variant Diagnostics
 
 Goal:
 
 - determine whether gene expression helps over a drug-only baseline
-- determine which current `CellLine` view is the strongest baseline
-- determine whether the model mainly fails on unseen cell lines or unseen drugs
-- determine whether the present training setup is stable enough to use as a reference
+- determine whether existing `CellLine` views help
+- determine whether PCA compression helps
+- determine whether failures are mainly on unseen drugs, unseen cell lines, or both
 
-Implemented support in `drug_synergy_baseline/src/train.py`:
+Implemented support:
 
-- gene expression on/off:
-  - `--use-gene-expression`
-  - `--no-use-gene-expression`
-- cell-line feature-view selection:
-  - `--cell-feature-view 0|1|2`
-- split strategy selection:
-  - `--split-strategy random|cell_line|drug|drug_pair`
-- cross-validation:
-  - `--cv-folds`
-  - `--cv-seeds`
-  - `--stratified-cv`
+- `--use-gene-expression`
+- `--no-use-gene-expression`
+- `--cell-feature-view 0|1|2`
+- `--gene-feature-set raw|filtered|compact`
+- `--split-strategy random|cell_line|drug|drug_pair|drug_and_cell_line`
+- `--cv-folds`
+- `--cv-seeds`
+- `--stratified-cv`
+- `--macro-preset`
+- `--max-samples`
 
-Primary outputs for this stage:
+Artifacts saved per single run:
 
-- `drug_synergy_baseline/outputs/<run_name>/metrics.json`
+- `metrics.json`
+- `config.json`
+- `history.csv`
+- `val_predictions.csv`
+- `test_predictions.csv`
+- `baseline_mlp.pt`
+- loss curve under `outputs/training_curves/`
 
-Current findings:
+Artifacts saved per CV run:
 
-- raw genes (`CellLine[0]`, `23808`) produced weak regression quality:
-  - `test_mse ~= 29.05`
-  - near-zero correlation
-  - predictions collapsed toward a constant
-- no-gene baseline was materially stronger:
-  - `test_mse ~= 20.25`
-  - `test_pearson ~= 0.55`
-- filtered built-in view (`CellLine[1]`, `3171`) still did not fix the collapse
+- `cv_metrics.json`
+- `cv_runs.csv`
+- `cv_test_predictions.csv`
+- fold-level `history.csv`
+- fold-level loss curves
 
-Interpretation:
+## Stage 1.1A. Results Tracking
 
-- the current issue is not just dimensionality in the abstract
-- the present gene branch is likely unstable or poorly conditioned relative to the amount of unique cell-line information
-- that justifies moving to an explicit compression pipeline before testing more complex encoders
+Canonical results file:
 
-### Stage 1.3A. z-score -> variance top-k -> PCA128
+- `drug_synergy_baseline/results/baseline_experiments.csv`
 
-Implemented a separate root-level module:
+Derived summary:
+
+- `drug_synergy_baseline/results/baseline_summary.csv`
+
+Current comparison policy:
+
+- source of truth is the long CSV
+- each row is one attempted run
+- `raw_genes` and `filtered_genes` are archived negatives
+- formal comparison set is `no_genes` vs `pca128`
+
+Current summary values:
+
+| Model | Random MSE | Drug MSE | Cell-Line MSE | Drug + Cell-Line MSE | Random CV10 10k MSE |
+|---|---:|---:|---:|---:|---:|
+| no genes | `20.2502` | `27.9074` | `21.8703` | `24.7152` | `16.9083` |
+| PCA128 | `19.0419` | `25.0928` | `36.0284` | `31.9951` | `14.9237` |
+
+Current summary values with Pearson:
+
+| Model | Random Pearson | Drug Pearson | Cell-Line Pearson | Drug + Cell-Line Pearson | Random CV10 10k Pearson |
+|---|---:|---:|---:|---:|---:|
+| no genes | `0.5505` | `0.0316` | `0.5614` | `0.3800` | `0.4778` |
+| PCA128 | `0.5892` | `0.1239` | `0.4094` | `0.3032` | `0.5650` |
+
+Interpretation so far:
+
+- raw genes do not help the current MLP
+- built-in filtered genes do not help the current MLP
+- PCA128 improves random split and unseen-drug split
+- PCA128 hurts unseen-cell-line split and combined unseen-drug + unseen-cell-line split
+- no-gene baseline remains strong enough that gene claims must be OOD-specific, not just random-split-specific
+
+Rows still planned:
+
+- `short_no_genes_random_practical`
+- `short_pca128_random_practical`
+- `long_cv10_10k_no_genes_drug_and_cell_line_practical`
+- `long_cv10_10k_pca128_drug_and_cell_line_practical`
+
+## Stage 1.1B. Split Semantics
+
+Implemented split strategies:
+
+- `random`: random row split
+- `drug`: hold out unique drugs
+- `cell_line`: hold out unique cell lines
+- `drug_pair`: hold out unique drug pairs
+- `drug_and_cell_line`: hold out unique drugs and cell lines together
+
+Important detail for drug splits:
+
+- both drug columns are checked
+- if a drug is excluded from train, it cannot appear as either `Drug1` or `Drug2` in train
+
+Important detail for `drug_and_cell_line`:
+
+- rows are not dropped
+- each row is routed by `test > val > train`
+- if either drug or the cell line belongs to the test bucket, row goes to test
+- else if either drug or the cell line belongs to the validation bucket, row goes to validation
+- else row goes to train
+
+Why this matters:
+
+- train is clean from validation/test drugs and cell lines
+- validation and test are harder than random row splits
+- mixed rows are preserved rather than thrown away
+
+CV status:
+
+- random stratified CV is implemented
+- `drug_and_cell_line` group-aware CV is implemented
+- group-aware CV is repeated holdout, not row-disjoint classic CV
+- validation fold is `(i + 1) % cv_folds`
+
+## Stage 1.3A. z-score -> Variance Top-k -> PCA128
+
+Implemented root-level module:
 
 - `data_compression/`
 
@@ -296,17 +317,12 @@ Current method directory:
 Pipeline:
 
 1. start from raw `CellLine[0]` (`23808`)
-2. rank features by raw weighted variance
-3. keep the top `3000`
+2. rank features by weighted variance
+3. keep top `3000`
 4. z-score the selected features
 5. fit weighted PCA
-6. export a baseline-compatible `drugcomb.csv` with one compressed `CellLine` view
-
-Important constraint:
-
-- this dataset currently has only `59` unique cell lines
-- so PCA cannot provide `128` informative dimensions
-- the pipeline writes the informative PCA dimensions first and zero-pads the rest to reach `128`
+6. export a baseline-compatible `drugcomb.csv`
+7. pad to `128` dimensions where rank is limited by the number of unique cell lines
 
 Files:
 
@@ -314,105 +330,132 @@ Files:
 - compressed output: `data_compression/zscore_var_pca_128/data/drugcomb.csv`
 - metadata: `data_compression/zscore_var_pca_128/data/metadata.json`
 
-Status:
+Result:
 
-- compression export pipeline implemented
-- compressed baseline run still pending
-- `drug_synergy_baseline/outputs/<run_name>/test_predictions.csv`
-- `drug_synergy_baseline/outputs/<run_name>/cv_metrics.json`
-- `drug_synergy_baseline/outputs/<run_name>/cv_runs.csv`
+- random split improved vs no genes:
+  - no genes MSE: `20.2502`
+  - PCA128 MSE: `19.0419`
+- random CV10 10k improved vs no genes:
+  - no genes MSE: `16.9083`
+  - PCA128 MSE: `14.9237`
+- combined OOD split worsened:
+  - no genes MSE: `24.7152`
+  - PCA128 MSE: `31.9951`
 
-Immediate runs for this stage:
+Current interpretation:
 
-```bash
-cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline
+- PCA128 may capture useful cell-line signal when test rows share the same distribution as train
+- PCA128 is not yet robust for unseen cell lines
+- compression alone is not enough; the model likely needs better regularization, grouping, or biological structure
 
-uv run python -m src.train --output-dir outputs/genes_on_random --split-strategy random --cell-feature-view 0 --epochs 10 --seed 42
-uv run python -m src.train --output-dir outputs/genes_off_random --split-strategy random --no-use-gene-expression --epochs 10 --seed 42
+## Stage 1.4. Reverse-Engineering / Attribution Plan
 
-uv run python -m src.train --output-dir outputs/view0_raw --split-strategy random --cell-feature-view 0 --epochs 10 --seed 42
-uv run python -m src.train --output-dir outputs/view1_filtered --split-strategy random --cell-feature-view 1 --epochs 10 --seed 42
-uv run python -m src.train --output-dir outputs/view2_compact --split-strategy random --cell-feature-view 2 --epochs 10 --seed 42
-```
+Motivation:
+
+- the next phase should not only ask whether genes improve MSE
+- it should also ask what the MLP is using from the gene representation
+
+Primary method: occlusion / perturbation attribution.
+
+This matches the meeting note about masking the input and measuring the change in output error.
+
+Terminology note:
+
+- the meeting note said `OCA`
+- this journal currently interprets that as occlusion-based contribution analysis / occlusion attribution
+- if the intended acronym was a different formal method, the implementation still starts from the same perturb-and-measure principle
+
+Basic procedure:
+
+1. train and freeze a baseline model
+2. choose a gene feature, PCA component, or feature group
+3. mask it, zero it, replace it with the train mean, or permute it across samples
+4. rerun predictions
+5. measure output change:
+   - delta prediction
+   - delta absolute error
+   - delta MSE
+6. rank features by the measured effect
+
+Why this is better than first looking at individual neurons:
+
+- hidden neurons are not guaranteed to correspond to meaningful biological concepts
+- MLP hidden representations are not identifiable; equivalent functions can use rotated/rescaled hidden states
+- a neuron can mix many unrelated signals
+- activation magnitude does not necessarily equal causal importance
+- correlated gene features can make neuron-level interpretation misleading
+
+Additional attribution methods to consider:
+
+- permutation importance
+- integrated gradients
+- gradient times input
+- SHAP-style analysis on PCA/compressed features
+- PCA loading analysis to map important components back to raw gene dimensions
+- group/pathway occlusion after gene metadata is available
+
+Attention/gating idea from the meeting:
+
+- add an attention or gating mechanism over genes, gene groups, or compressed components
+- inspect the learned gates/attention weights as a weak interpretability signal
+- modify attention temperature/scaling in the `Q * K` interaction to control sharpness
+- in standard scaled dot-product attention, larger temperature/scale divisor makes attention softer; smaller divisor makes attention sharper
+- if the goal is noisy or robust selection, explicit logit noise, dropout, or entropy regularization may be cleaner than only changing the scale factor
+
+Open caution:
+
+- attention is not automatically explanation
+- learned weights must be validated with perturbation tests
 
 ## Immediate Research Questions
 
-### 1. Baseline quality
+### 1. Do genes help?
 
-- Why is the baseline near trivial-performance territory?
-- Is the raw gene representation too noisy?
-- Is the simple drug representation too weak?
-- Are we normalizing gene expression appropriately?
+Current answer:
 
-### 2. Gene expression meaning
+- raw and filtered genes do not help
+- PCA128 helps on random and unseen-drug splits
+- PCA128 hurts unseen-cell-line and combined split
 
-- What exactly does each index correspond to?
-- Can we recover gene names / metadata?
-- Which preprocessing steps were applied before these views were produced?
+Remaining answer needed:
 
-### 3. Compression strategy
+- rerun random short rows under `practical_research`
+- complete group-aware CV10 10k
 
-The main research direction remains:
+### 2. Is the model learning cell-line biology or split artifacts?
 
-- better compression of gene expression
-- without losing biological meaning
-- while improving downstream synergy prediction
+Current evidence:
 
-### 4. Cell-line-only predictor value
+- PCA128 helps random/CV random
+- PCA128 hurts unseen-cell-line
 
-- Can the filtered `3171`-feature view predict screening difficulty better than a trivial baseline?
-- Does this remain true if the target is changed from composite `ease_score` to:
-  - mean ZIP
-  - high-hit rate (`ZIP > 10`)?
-- Is the signal biological, or mostly a consequence of how the screen was designed?
+Interpretation:
 
-## Planned Next Steps
+- the model may be exploiting cell-line identities or train/test overlap patterns
+- unseen-cell-line evaluation is the critical test for biological generalization
 
-### Stage 1.2. Modular encoder
+### 3. Is PCA128 the right compression?
 
-Replace raw gene input with:
+Current answer:
 
-- `z_cell = encoder(gene_expr)`
+- PCA128 is a useful first compression baseline
+- it is not sufficient as a final gene encoder
 
-Keep fixed:
+Next compression candidates:
 
-- drug representation branch
-- fusion style
-- predictor head
+- `z-score -> Var3k -> PCA512 -> AE128`
+- `z-score -> BioFilter1k-3k -> AE128`
+- `raw -> AE128`, lower priority because it is hardest to stabilize
 
-First version:
+### 4. What should be interpreted first?
 
-- MLP encoder
+Priority order:
 
-Later versions:
-
-- autoencoder bottleneck
-- graph-informed encoder
-
-### Sparse-expression idea
-
-One concrete idea to test:
-
-- keep only values `> 2.3`
-- also keep their original indices
-
-Possible structures:
-
-- sparse index-value list
-- dictionary / hash table
-- graph-ready node-feature representation
-
-Why this may help:
-
-- removes obvious low-expression floor values
-- preserves which genes remain active
-- may reduce noise before compression
-
-Open issues:
-
-- need to confirm biological meaning of `2.3`
-- need mapping from index to gene identity
-- need to compare against standard variance filtering
+1. no-gene vs PCA128 prediction differences on the same rows
+2. PCA component occlusion
+3. map important PCA components back to raw top-variance gene dimensions
+4. raw-gene or pathway-level occlusion once gene metadata is available
+5. neuron-level inspection only as a secondary diagnostic
 
 ## Milestones
 
@@ -422,43 +465,34 @@ Open issues:
 - baseline pipeline implemented
 - prediction CLI implemented
 - cell-line-only difficulty module implemented
-- cell-line-only predictive model implemented and tested
+- cell-line-only predictive model implemented
+- raw/filtered/no-gene/PCA128 comparisons started
+- canonical results tracking implemented
+- loss curves and per-epoch histories implemented
+- `drug_and_cell_line` split implemented
+- group-aware `drug_and_cell_line` CV implemented
+- PCA128 compression pipeline implemented
 
-### In progress
+### In Progress
 
-- understand why baseline performance is weak
-- understand gene-expression feature semantics
+- finish canonical short random reruns under `practical_research`
+- finish group-aware CV10 10k runs
+- interpret whether PCA128 is useful beyond random splits
 
-### Next milestone
+### Next
 
-- modular gene encoder with fixed downstream model
-- Result:
-  - `________________`
-
-### After that
-
-- test expression filtering / sparse encoding
-- Result:
-  - `________________`
-
-### Later
-
-- autoencoder baseline
-- graph-informed encoder
-- biological prior integration
-- Result:
-  - `________________`
+- Stage `1.4`: implement occlusion/perturbation attribution for PCA128
+- Stage `1.2`: implement modular gene encoder branch
+- Stage `1.3`: test AE-based compression after PCA128 attribution
 
 ## Useful Paths
 
-- Baseline code: `src/`
-- SOTA reference model: `sota_reference_model/`
-- Main synergy dataset: `drug_synergy_baseline/data/drugcomb.csv`
-- Baseline metrics: `outputs/metrics.json`
-- Baseline predictions: `outputs/val_predictions.csv`
-- Visual summaries: `outputs/visualization/`
-- Cell-line analysis module: `../cell_line_difficulty/`
-- Cell-line analysis outputs: `../cell_line_difficulty/outputs/`
-- Predictive metrics: `../cell_line_difficulty/outputs/predictive_metrics.json`
-- Predictive dataset: `../cell_line_difficulty/outputs/predictive_dataset.csv`
-- Predictive LOOCV predictions: `../cell_line_difficulty/outputs/loocv_predictions.csv`
+- Baseline code: `drug_synergy_baseline/src/`
+- Baseline results: `drug_synergy_baseline/results/`
+- Baseline outputs: `drug_synergy_baseline/outputs/`
+- Training curves: `drug_synergy_baseline/outputs/training_curves/`
+- Hyperparameter presets: `drug_synergy_baseline/macros.toml`
+- Data compression module: `data_compression/`
+- PCA128 method: `data_compression/zscore_var_pca_128/`
+- SOTA/reference model: `sota_reference_model/`
+- Cell-line analysis module: `cell_line_difficulty/`

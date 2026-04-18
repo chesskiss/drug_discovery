@@ -149,7 +149,7 @@ def _planned_short_phase_specs() -> list[dict[str, Any]]:
         ("no_genes", "1.1", "off", 0, "no_genes"),
         ("pca128", "1.3A", "pca128", 128, "pca128"),
     ]:
-        for split_strategy in ("random", "drug", "cell_line"):
+        for split_strategy in ("random", "drug", "cell_line", "drug_and_cell_line"):
             run_name = f"short_{output_prefix}_{split_strategy}_practical"
             planned_rows.append(
                 _empty_row(
@@ -196,6 +196,88 @@ def _planned_long_phase_placeholder() -> dict[str, Any]:
         source_metrics_path="",
         notes="Placeholder row. Fill after the canonical random short-phase winner is chosen by lowest test_mse, then highest test_pearson, then simpler model.",
     )
+
+
+def _explicit_long_phase_specs() -> list[dict[str, Any]]:
+    practical = load_macro_preset("practical_research")
+    return [
+        _empty_row(
+            run_id="long_cv10_10k_no_genes_practical",
+            stage_id="1.1",
+            status="planned",
+            phase="long_cv_10k",
+            model_id="no_genes",
+            gene_setting="off",
+            gene_dim=0,
+            split_strategy="random",
+            eval_mode="cv10_stratified",
+            sample_cap="10000",
+            macro_preset="practical_research",
+            seed_spec="cv_seeds=42",
+            epochs=int(practical["epochs"]),
+            lr=float(practical["lr"]),
+            batch_size=int(practical["batch_size"]),
+            source_metrics_path="outputs/long_cv10_10k_no_genes_practical/cv_metrics.json",
+            notes="Explicit long-phase CV row for the no-genes baseline.",
+        ),
+        _empty_row(
+            run_id="long_cv10_10k_pca128_practical",
+            stage_id="1.3A",
+            status="planned",
+            phase="long_cv_10k",
+            model_id="pca128",
+            gene_setting="pca128",
+            gene_dim=128,
+            split_strategy="random",
+            eval_mode="cv10_stratified",
+            sample_cap="10000",
+            macro_preset="practical_research",
+            seed_spec="cv_seeds=42",
+            epochs=int(practical["epochs"]),
+            lr=float(practical["lr"]),
+            batch_size=int(practical["batch_size"]),
+            source_metrics_path="outputs/long_cv10_10k_pca128_practical/cv_metrics.json",
+            notes="Explicit long-phase CV row for the pca128 baseline.",
+        ),
+        _empty_row(
+            run_id="long_cv10_10k_no_genes_drug_and_cell_line_practical",
+            stage_id="1.1",
+            status="planned",
+            phase="long_cv_10k",
+            model_id="no_genes",
+            gene_setting="off",
+            gene_dim=0,
+            split_strategy="drug_and_cell_line",
+            eval_mode="cv10_group_aware",
+            sample_cap="10000",
+            macro_preset="practical_research",
+            seed_spec="cv_seeds=42",
+            epochs=int(practical["epochs"]),
+            lr=float(practical["lr"]),
+            batch_size=int(practical["batch_size"]),
+            source_metrics_path="outputs/long_cv10_10k_no_genes_drug_and_cell_line_practical/cv_metrics.json",
+            notes="Explicit group-aware long-phase CV row for the no-genes baseline.",
+        ),
+        _empty_row(
+            run_id="long_cv10_10k_pca128_drug_and_cell_line_practical",
+            stage_id="1.3A",
+            status="planned",
+            phase="long_cv_10k",
+            model_id="pca128",
+            gene_setting="pca128",
+            gene_dim=128,
+            split_strategy="drug_and_cell_line",
+            eval_mode="cv10_group_aware",
+            sample_cap="10000",
+            macro_preset="practical_research",
+            seed_spec="cv_seeds=42",
+            epochs=int(practical["epochs"]),
+            lr=float(practical["lr"]),
+            batch_size=int(practical["batch_size"]),
+            source_metrics_path="outputs/long_cv10_10k_pca128_drug_and_cell_line_practical/cv_metrics.json",
+            notes="Explicit group-aware long-phase CV row for the pca128 baseline.",
+        ),
+    ]
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -306,12 +388,17 @@ def _promote_long_phase_row(rows: list[dict[str, Any]]) -> None:
 
 
 def build_registry() -> list[dict[str, Any]]:
-    rows = _legacy_specs() + _planned_short_phase_specs() + [_planned_long_phase_placeholder()]
+    rows = (
+        _legacy_specs()
+        + _planned_short_phase_specs()
+        + _explicit_long_phase_specs()
+        + [_planned_long_phase_placeholder()]
+    )
 
     synced_rows: list[dict[str, Any]] = []
     for row in rows:
         synced = dict(row)
-        if row["eval_mode"] == "cv10_stratified":
+        if row["eval_mode"] in {"cv10_stratified", "cv10_group_aware"}:
             synced = _sync_cv_row(synced)
         else:
             synced = _sync_single_split_row(synced)
@@ -357,14 +444,46 @@ def build_summary(rows: list[dict[str, Any]]) -> pd.DataFrame:
 
     for model_id in ("no_genes", "pca128"):
         summary_row: dict[str, Any] = {"model_id": model_id}
-        for split_strategy in ("random", "drug", "cell_line"):
+        for split_strategy in ("random", "drug", "cell_line", "drug_and_cell_line"):
             preferred = _preferred_row(rows, model_id=model_id, split_strategy=split_strategy)
             summary_row[f"{split_strategy}_test_mse"] = "" if preferred is None else preferred["test_mse"]
             summary_row[f"{split_strategy}_test_pearson"] = "" if preferred is None else preferred["test_pearson"]
 
         summary_row["cv10_10k_mse"] = ""
+        summary_row["drug_and_cell_line_cv10_10k_mse"] = ""
+        summary_row["drug_and_cell_line_cv10_10k_pearson"] = ""
         if long_row is not None and long_row["model_id"] == model_id:
             summary_row["cv10_10k_mse"] = long_row["test_mse"]
+        else:
+            explicit_long = next(
+                (
+                    row
+                    for row in rows
+                    if row["status"] == "done"
+                    and row["phase"] == "long_cv_10k"
+                    and row["model_id"] == model_id
+                    and row["split_strategy"] == "random"
+                    and row["run_id"] != "long_cv10_10k_promoted_winner"
+                ),
+                None,
+            )
+            if explicit_long is not None:
+                summary_row["cv10_10k_mse"] = explicit_long["test_mse"]
+
+        explicit_combined_long = next(
+            (
+                row
+                for row in rows
+                if row["status"] == "done"
+                and row["phase"] == "long_cv_10k"
+                and row["model_id"] == model_id
+                and row["split_strategy"] == "drug_and_cell_line"
+            ),
+            None,
+        )
+        if explicit_combined_long is not None:
+            summary_row["drug_and_cell_line_cv10_10k_mse"] = explicit_combined_long["test_mse"]
+            summary_row["drug_and_cell_line_cv10_10k_pearson"] = explicit_combined_long["test_pearson"]
 
         summary_rows.append(summary_row)
 

@@ -1,6 +1,6 @@
 [practical_research]
 description = "Stable default for current baseline experiments on compressed or filtered cell-line features."
-epochs = 50
+epochs = 35 #50
 batch_size = 64
 lr = 0.0001
 smiles_dim = 256

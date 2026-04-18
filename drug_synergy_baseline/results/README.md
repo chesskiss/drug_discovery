@@ -24,7 +24,7 @@ Run this after each experiment completes.
 
 ## Canonical Short-Phase Runs
 
-Use one frozen preset for the 6-run matrix:
+Use one frozen preset for the 8-run matrix:
 
 - `--macro-preset practical_research`
 
@@ -49,6 +49,13 @@ uv run python -m src.train \
   --macro-preset practical_research \
   --output-dir outputs/short_no_genes_cell_line_practical \
   --split-strategy cell_line \
+  --no-use-gene-expression \
+  --seed 42
+
+uv run python -m src.train \
+  --macro-preset practical_research \
+  --output-dir outputs/short_no_genes_drug_and_cell_line_practical \
+  --split-strategy drug_and_cell_line \
   --no-use-gene-expression \
   --seed 42
 ```
@@ -79,13 +86,33 @@ uv run python -m src.train \
   --cell-expression-path data/drugcomb.csv \
   --cell-feature-view 0 \
   --seed 42
+
+uv run python -m src.train \
+  --macro-preset practical_research \
+  --output-dir outputs/short_pca128_drug_and_cell_line_practical \
+  --split-strategy drug_and_cell_line \
+  --cell-expression-path data/drugcomb.csv \
+  --cell-feature-view 0 \
+  --seed 42
 ```
+
+## Combined Split Semantics
+
+The `drug_and_cell_line` split uses `test > val > train` priority routing.
+
+- split drugs into `train/val/test`
+- split cell lines into `train/val/test`
+- row goes to `test` if either drug or the cell line is in the test bucket
+- else row goes to `val` if either drug or the cell line is in the val bucket
+- else row goes to `train`
+
+This keeps train free of validation/test drugs and cell lines while avoiding row drops.
 
 ## Long-Phase Run
 
-Run exactly one long CV job after the canonical short-phase random winner is known.
+Random CV and group-aware CV are tracked separately.
 
-If the winner is `no_genes`:
+### Random CV
 
 ```bash
 uv run python -m src.train \
@@ -100,8 +127,6 @@ uv run python -m src.train \
   --seed 42
 ```
 
-If the winner is `pca128`:
-
 ```bash
 uv run python -m src.train \
   --macro-preset practical_research \
@@ -111,6 +136,35 @@ uv run python -m src.train \
   --cell-feature-view 0 \
   --cv-folds 10 \
   --stratified-cv \
+  --cv-seeds 42 \
+  --max-samples 10000 \
+  --seed 42
+```
+
+### Drug + Cell-Line Group-Aware CV
+
+This is group-aware repeated holdout CV, not classic row-disjoint CV. A row can be test in more than one fold if its drug and cell-line memberships land in different held-out folds.
+
+```bash
+uv run python -m src.train \
+  --macro-preset practical_research \
+  --output-dir outputs/long_cv10_10k_no_genes_drug_and_cell_line_practical \
+  --split-strategy drug_and_cell_line \
+  --no-use-gene-expression \
+  --cv-folds 10 \
+  --cv-seeds 42 \
+  --max-samples 10000 \
+  --seed 42
+```
+
+```bash
+uv run python -m src.train \
+  --macro-preset practical_research \
+  --output-dir outputs/long_cv10_10k_pca128_drug_and_cell_line_practical \
+  --split-strategy drug_and_cell_line \
+  --cell-expression-path data/drugcomb.csv \
+  --cell-feature-view 0 \
+  --cv-folds 10 \
   --cv-seeds 42 \
   --max-samples 10000 \
   --seed 42

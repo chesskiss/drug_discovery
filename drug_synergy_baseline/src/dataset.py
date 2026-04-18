@@ -157,6 +157,58 @@ def _split_unique_values(
     return train_values, val_values, test_values
 
 
+def split_unique_values_into_folds(
+    values: list[str],
+    *,
+    num_folds: int,
+    random_seed: int,
+) -> list[set[str]]:
+    if num_folds < 2:
+        raise ValueError("Group-aware cross-validation requires at least 2 folds.")
+    if not values:
+        raise ValueError("Cannot split an empty group set.")
+
+    unique_values = np.asarray(sorted(set(values)))
+    if len(unique_values) < num_folds:
+        raise ValueError(f"Cannot build {num_folds} folds from only {len(unique_values)} unique groups.")
+
+    rng = np.random.default_rng(random_seed)
+    rng.shuffle(unique_values)
+
+    fold_buckets: list[list[str]] = [[] for _ in range(num_folds)]
+    for index, value in enumerate(unique_values):
+        fold_buckets[index % num_folds].append(str(value))
+
+    return [set(bucket) for bucket in fold_buckets]
+
+
+def split_drug_and_cell_line_priority_rows(
+    synergy_df: pd.DataFrame,
+    *,
+    val_drugs: set[str],
+    test_drugs: set[str],
+    val_cells: set[str],
+    test_cells: set[str],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    working_df = synergy_df.copy()
+
+    def classify_joint_row(row: pd.Series) -> str:
+        drug_a = str(row["smiles_a"])
+        drug_b = str(row["smiles_b"])
+        cell_line = str(row["cell_line"])
+        if drug_a in test_drugs or drug_b in test_drugs or cell_line in test_cells:
+            return "test"
+        if drug_a in val_drugs or drug_b in val_drugs or cell_line in val_cells:
+            return "val"
+        return "train"
+
+    working_df["split"] = working_df.apply(classify_joint_row, axis=1)
+    train_rows = working_df[working_df["split"] == "train"].drop(columns=["split"]).copy()
+    val_rows = working_df[working_df["split"] == "val"].drop(columns=["split"]).copy()
+    test_rows = working_df[working_df["split"] == "test"].drop(columns=["split"]).copy()
+    return train_rows, val_rows, test_rows
+
+
 def split_synergy_rows(
     synergy_df: pd.DataFrame,
     *,
@@ -189,6 +241,27 @@ def split_synergy_rows(
         train_rows = synergy_df[synergy_df["cell_line"].isin(train_cells)].copy()
         val_rows = synergy_df[synergy_df["cell_line"].isin(val_cells)].copy()
         test_rows = synergy_df[synergy_df["cell_line"].isin(test_cells)].copy()
+    elif split_strategy == "drug_and_cell_line":
+        all_drugs = sorted(set(synergy_df["smiles_a"].astype(str)) | set(synergy_df["smiles_b"].astype(str)))
+        _, val_drugs, test_drugs = _split_unique_values(
+            all_drugs,
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+            random_seed=random_seed,
+        )
+        _, val_cells, test_cells = _split_unique_values(
+            synergy_df["cell_line"].astype(str).tolist(),
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+            random_seed=random_seed,
+        )
+        train_rows, val_rows, test_rows = split_drug_and_cell_line_priority_rows(
+            synergy_df,
+            val_drugs=val_drugs,
+            test_drugs=test_drugs,
+            val_cells=val_cells,
+            test_cells=test_cells,
+        )
     elif split_strategy in {"drug", "drug_pair"}:
         working_df = synergy_df.copy()
         if split_strategy == "drug":

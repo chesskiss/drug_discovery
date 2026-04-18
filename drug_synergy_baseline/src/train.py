@@ -15,6 +15,8 @@ from .dataset import (
     build_dataset_bundle_from_rows,
     build_datasets,
     load_aligned_synergy_and_expression,
+    split_drug_and_cell_line_priority_rows,
+    split_unique_values_into_folds,
 )
 from .macros import DEFAULT_MACRO_FILE, DEFAULT_MACRO_PRESET, load_macro_preset
 from .model import build_baseline_model
@@ -56,7 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--train-fraction", type=float, default=float(macro_values["train_fraction"]))
     parser.add_argument("--val-fraction", type=float, default=float(macro_values["val_fraction"]))
-    parser.add_argument("--split-strategy", choices=["random", "cell_line", "drug", "drug_pair"], default="random")
+    parser.add_argument(
+        "--split-strategy",
+        choices=["random", "cell_line", "drug", "drug_pair", "drug_and_cell_line"],
+        default="random",
+    )
     parser.add_argument("--use-gene-expression", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--gene-feature-set",
@@ -338,8 +344,10 @@ def build_cv_folds(frame: pd.DataFrame, num_folds: int, seed: int, stratified: b
 
 
 def run_cross_validation(args: argparse.Namespace) -> None:
-    if args.split_strategy != "random":
-        raise ValueError("Cross-validation is currently only supported with --split-strategy random.")
+    if args.split_strategy not in {"random", "drug_and_cell_line"}:
+        raise ValueError("Cross-validation is currently supported only with --split-strategy random or drug_and_cell_line.")
+    if args.split_strategy == "drug_and_cell_line" and args.stratified_cv:
+        print("WARNING: --stratified-cv is ignored for drug_and_cell_line CV; group-aware folds are used instead.")
 
     cv_seeds = args.cv_seeds or [args.seed]
     synergy_df, expression_lookup, gene_dim = load_aligned_synergy_and_expression(
@@ -364,23 +372,59 @@ def run_cross_validation(args: argparse.Namespace) -> None:
         val_fraction_within_train = args.val_fraction / observed_fraction
 
     for seed in cv_seeds:
-        folds = build_cv_folds(synergy_df, num_folds=args.cv_folds, seed=seed, stratified=args.stratified_cv)
-        for fold_idx, test_indices in enumerate(folds):
-            mask = np.ones(len(synergy_df), dtype=bool)
-            mask[test_indices] = False
-            remaining = synergy_df.loc[mask].reset_index(drop=True)
-            test_rows = synergy_df.iloc[test_indices].reset_index(drop=True)
+        if args.split_strategy == "random":
+            folds = build_cv_folds(synergy_df, num_folds=args.cv_folds, seed=seed, stratified=args.stratified_cv)
+            fold_indices = range(len(folds))
+        else:
+            all_drugs = sorted(set(synergy_df["smiles_a"].astype(str)) | set(synergy_df["smiles_b"].astype(str)))
+            drug_folds = split_unique_values_into_folds(
+                all_drugs,
+                num_folds=args.cv_folds,
+                random_seed=seed,
+            )
+            cell_folds = split_unique_values_into_folds(
+                synergy_df["cell_line"].astype(str).tolist(),
+                num_folds=args.cv_folds,
+                random_seed=seed,
+            )
+            fold_indices = range(args.cv_folds)
 
-            shuffled_indices = np.arange(len(remaining))
-            fold_rng = np.random.default_rng(seed * 1000 + fold_idx)
-            fold_rng.shuffle(shuffled_indices)
+        for fold_idx in fold_indices:
+            if args.split_strategy == "random":
+                test_indices = folds[fold_idx]
+                mask = np.ones(len(synergy_df), dtype=bool)
+                mask[test_indices] = False
+                remaining = synergy_df.loc[mask].reset_index(drop=True)
+                test_rows = synergy_df.iloc[test_indices].reset_index(drop=True)
 
-            val_count = max(1, int(len(shuffled_indices) * val_fraction_within_train))
-            if val_count >= len(shuffled_indices):
-                val_count = max(1, len(shuffled_indices) - 1)
+                shuffled_indices = np.arange(len(remaining))
+                fold_rng = np.random.default_rng(seed * 1000 + fold_idx)
+                fold_rng.shuffle(shuffled_indices)
 
-            val_rows = remaining.iloc[shuffled_indices[:val_count]].reset_index(drop=True)
-            train_rows = remaining.iloc[shuffled_indices[val_count:]].reset_index(drop=True)
+                val_count = max(1, int(len(shuffled_indices) * val_fraction_within_train))
+                if val_count >= len(shuffled_indices):
+                    val_count = max(1, len(shuffled_indices) - 1)
+
+                val_rows = remaining.iloc[shuffled_indices[:val_count]].reset_index(drop=True)
+                train_rows = remaining.iloc[shuffled_indices[val_count:]].reset_index(drop=True)
+            else:
+                val_fold_idx = (fold_idx + 1) % args.cv_folds
+                train_rows, val_rows, test_rows = split_drug_and_cell_line_priority_rows(
+                    synergy_df,
+                    val_drugs=drug_folds[val_fold_idx],
+                    test_drugs=drug_folds[fold_idx],
+                    val_cells=cell_folds[val_fold_idx],
+                    test_cells=cell_folds[fold_idx],
+                )
+                if train_rows.empty or val_rows.empty or test_rows.empty:
+                    raise ValueError(
+                        "drug_and_cell_line CV produced an empty split "
+                        f"for seed={seed}, fold={fold_idx + 1} "
+                        f"(train={len(train_rows)}, val={len(val_rows)}, test={len(test_rows)})."
+                    )
+                train_rows = train_rows.reset_index(drop=True)
+                val_rows = val_rows.reset_index(drop=True)
+                test_rows = test_rows.reset_index(drop=True)
 
             datasets = build_dataset_bundle_from_rows(
                 train_rows=train_rows,
@@ -416,7 +460,9 @@ def run_cross_validation(args: argparse.Namespace) -> None:
         "evaluation_mode": "cross_validation",
         "cv_folds": args.cv_folds,
         "cv_seeds": cv_seeds,
-        "stratified_cv": args.stratified_cv,
+        "stratified_cv": args.stratified_cv if args.split_strategy == "random" else False,
+        "requested_stratified_cv": args.stratified_cv,
+        "cv_group_strategy": "row_folds" if args.split_strategy == "random" else "drug_and_cell_line_priority",
         "split_strategy": args.split_strategy,
         "macro_file": args.macro_file,
         "macro_preset": args.macro_preset,
