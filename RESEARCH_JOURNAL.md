@@ -10,13 +10,20 @@ Current strategy:
 2. Replace only the gene expression branch
 3. Compare encoder variants while keeping the downstream pipeline fixed
 
+Current stage map:
+
+- `Stage 1.0`: data grounding and initial pipeline validation
+- `Stage 1.1`: baseline variant diagnostics
+- `Stage 1.2`: modular gene encoder replacement
+- `Stage 1.3`: compression baseline comparisons
+- `Stage 1.3A`: `z-score -> variance top-k -> PCA128` export pipeline
+
 ## Dataset Notes
 
 Primary dataset:
 
-- `data/drugcomb_synergy.csv`
-- `data/drugcomb_with_smiles.csv`
-- `data/drugcomb.pkl`
+- `data_compression/zscore_var_pca_128/data/drugcomb_raw.csv`
+- `drug_synergy_baseline/data/drugcomb.pkl`
 
 Primary target:
 
@@ -28,7 +35,7 @@ Why ZIP:
 - reasonably balanced compared with some alternatives
 - appropriate first regression label
 
-Important columns in `data/drugcomb_synergy.csv`:
+Important columns in the synergy table:
 
 - `Drug1_ID`: drug A identifier
 - `Drug2_ID`: drug B identifier
@@ -41,6 +48,12 @@ Important columns in `data/drugcomb_synergy.csv`:
 - `Drug1`: SMILES string for drug A
 - `Drug2`: SMILES string for drug B
 - `CellLine`: embedded cell-line feature payload
+
+Current layout note:
+
+- `drugcomb_raw.csv` is the raw export file kept under `data_compression/`
+- `drugcomb.pkl` is the non-truncated source for embedded `CellLine` arrays
+- future compressed exports are written as `data_compression/.../data/drugcomb.csv` and can then be moved into baseline `data/`
 
 ## CellLine Interpretation
 
@@ -60,7 +73,7 @@ Interpretation for now:
 
 ## What We Implemented
 
-### 1. Minimal baseline pipeline
+### Stage 1.0A. Minimal baseline pipeline
 
 Implemented a DeepSynergy-style baseline in `src/`:
 
@@ -104,9 +117,9 @@ Current baseline metrics from `outputs/metrics.json`:
 Important note:
 
 - current baseline is functional, but performance is not yet clearly better than a trivial baseline
-- this is acceptable for Step 1A because the main goal was pipeline validation
+- this is acceptable for `Stage 1.0` because the main goal was pipeline validation
 
-### 2. Visualization / data inspection
+### Stage 1.0B. Visualization / data inspection
 
 Relevant outputs:
 
@@ -123,7 +136,7 @@ Figures:
 
 ![Top Pair Frequency](outputs/visualization/top_pair_frequency_hist.png)
 
-### 3. Cell-line-only difficulty analysis
+### Stage 1.0C. Cell-line-only difficulty analysis
 
 Implemented a separate module:
 
@@ -154,7 +167,7 @@ Interpretation:
 - it is an observational screen-level heuristic
 - it mixes cell-line susceptibility with which drugs and combinations were tested
 
-### 4. Cell-line-only predictive model
+### Stage 1.0D. Cell-line-only predictive model
 
 Built a predictive model on top of the cell-line-only difficulty target.
 
@@ -165,8 +178,8 @@ Purpose:
 
 Inputs:
 
-- target source: `data/drugcomb_synergy.csv`
-- feature source: `data/drugcomb.pkl`
+- target source: `drug_synergy_baseline/data/drugcomb.csv`
+- feature source: non-truncated `CellLine` payload source
 - feature view used: `CellLine[1]`
 - feature dimension: `3171`
 
@@ -184,7 +197,7 @@ Modeling setup:
 Run command:
 
 ```bash
-python3 -m cell_line_difficulty.src.cell_line_difficulty.predict_cli --synergy-path drug_synergy_baseline/data/drugcomb_synergy.csv --pickle-path drug_synergy_baseline/data/drugcomb.pkl --output-dir cell_line_difficulty/outputs
+python3 -m cell_line_difficulty.src.cell_line_difficulty.predict_cli --synergy-path drug_synergy_baseline/data/drugcomb.csv --pickle-path drug_synergy_baseline/data/drugcomb.pkl --output-dir cell_line_difficulty/outputs
 ```
 
 Relevant outputs:
@@ -222,6 +235,106 @@ Important caution:
 - because the leave-one-out training mean is mechanically anti-correlated with the held-out target
 - RMSE/MAE are the more useful comparison here
 
+## Current Stage
+
+### Stage 1.1. Baseline variant diagnostics
+
+This is the current step before any new gene-compression model is introduced.
+
+Goal:
+
+- determine whether gene expression helps over a drug-only baseline
+- determine which current `CellLine` view is the strongest baseline
+- determine whether the model mainly fails on unseen cell lines or unseen drugs
+- determine whether the present training setup is stable enough to use as a reference
+
+Implemented support in `drug_synergy_baseline/src/train.py`:
+
+- gene expression on/off:
+  - `--use-gene-expression`
+  - `--no-use-gene-expression`
+- cell-line feature-view selection:
+  - `--cell-feature-view 0|1|2`
+- split strategy selection:
+  - `--split-strategy random|cell_line|drug|drug_pair`
+- cross-validation:
+  - `--cv-folds`
+  - `--cv-seeds`
+  - `--stratified-cv`
+
+Primary outputs for this stage:
+
+- `drug_synergy_baseline/outputs/<run_name>/metrics.json`
+
+Current findings:
+
+- raw genes (`CellLine[0]`, `23808`) produced weak regression quality:
+  - `test_mse ~= 29.05`
+  - near-zero correlation
+  - predictions collapsed toward a constant
+- no-gene baseline was materially stronger:
+  - `test_mse ~= 20.25`
+  - `test_pearson ~= 0.55`
+- filtered built-in view (`CellLine[1]`, `3171`) still did not fix the collapse
+
+Interpretation:
+
+- the current issue is not just dimensionality in the abstract
+- the present gene branch is likely unstable or poorly conditioned relative to the amount of unique cell-line information
+- that justifies moving to an explicit compression pipeline before testing more complex encoders
+
+### Stage 1.3A. z-score -> variance top-k -> PCA128
+
+Implemented a separate root-level module:
+
+- `data_compression/`
+
+Current method directory:
+
+- `data_compression/zscore_var_pca_128/`
+
+Pipeline:
+
+1. start from raw `CellLine[0]` (`23808`)
+2. rank features by raw weighted variance
+3. keep the top `3000`
+4. z-score the selected features
+5. fit weighted PCA
+6. export a baseline-compatible `drugcomb.csv` with one compressed `CellLine` view
+
+Important constraint:
+
+- this dataset currently has only `59` unique cell lines
+- so PCA cannot provide `128` informative dimensions
+- the pipeline writes the informative PCA dimensions first and zero-pads the rest to reach `128`
+
+Files:
+
+- raw CSV: `data_compression/zscore_var_pca_128/data/drugcomb_raw.csv`
+- compressed output: `data_compression/zscore_var_pca_128/data/drugcomb.csv`
+- metadata: `data_compression/zscore_var_pca_128/data/metadata.json`
+
+Status:
+
+- compression export pipeline implemented
+- compressed baseline run still pending
+- `drug_synergy_baseline/outputs/<run_name>/test_predictions.csv`
+- `drug_synergy_baseline/outputs/<run_name>/cv_metrics.json`
+- `drug_synergy_baseline/outputs/<run_name>/cv_runs.csv`
+
+Immediate runs for this stage:
+
+```bash
+cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline
+
+uv run python -m src.train --output-dir outputs/genes_on_random --split-strategy random --cell-feature-view 0 --epochs 10 --seed 42
+uv run python -m src.train --output-dir outputs/genes_off_random --split-strategy random --no-use-gene-expression --epochs 10 --seed 42
+
+uv run python -m src.train --output-dir outputs/view0_raw --split-strategy random --cell-feature-view 0 --epochs 10 --seed 42
+uv run python -m src.train --output-dir outputs/view1_filtered --split-strategy random --cell-feature-view 1 --epochs 10 --seed 42
+uv run python -m src.train --output-dir outputs/view2_compact --split-strategy random --cell-feature-view 2 --epochs 10 --seed 42
+```
+
 ## Immediate Research Questions
 
 ### 1. Baseline quality
@@ -255,7 +368,7 @@ The main research direction remains:
 
 ## Planned Next Steps
 
-### Step 1B: modular encoder
+### Stage 1.2. Modular encoder
 
 Replace raw gene input with:
 
@@ -339,8 +452,8 @@ Open issues:
 ## Useful Paths
 
 - Baseline code: `src/`
-- MatchMaker reference: `matchmaker/`
-- Main dataset: `data/drugcomb_synergy.csv`
+- SOTA reference model: `sota_reference_model/`
+- Main synergy dataset: `drug_synergy_baseline/data/drugcomb.csv`
 - Baseline metrics: `outputs/metrics.json`
 - Baseline predictions: `outputs/val_predictions.csv`
 - Visual summaries: `outputs/visualization/`

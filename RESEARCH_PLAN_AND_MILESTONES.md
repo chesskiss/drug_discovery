@@ -4,13 +4,21 @@
 
 Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 
+## Stage Map
+
+- `Stage 1.0`: data grounding + initial baseline pipeline
+- `Stage 1.1`: baseline variant diagnostics
+- `Stage 1.2`: modular gene encoder replacement
+- `Stage 1.3`: compression baseline comparisons
+- `Stage 1.3A`: first explicit compression export with `z-score -> variance top-k -> PCA128`
+
 ## Strategies
 - Use weak baseline and improve/replace compression methods of celline genes. Should see better improvement in compariosn to SOTA models. 
 - Naive compression (627) vs my compression plan - then add to weak baseline
 
 ## Done
 
-### 1. Data grounding + visualization
+### Stage 1.0A. Data grounding + visualization
 
 - Visualized the dataset 
 - Confirmed dataset structure:
@@ -22,7 +30,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
   - `3171` filtered
   - `627` pathway-level
 
-### 2. Baseline pipeline
+### Stage 1.0B. Baseline pipeline
 
 - Implemented a DeepSynergy-style baseline:
   - input = `[drug_a, drug_b, gene_expr]`
@@ -34,7 +42,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
   - `test_mse = 29.0515`
   - `test_rmse = 5.3899`
 
-### 3. Cell-line-only analysis
+### Stage 1.0C. Cell-line-only analysis
 
 - Implemented separate `cell_line_difficulty/` module
 - Ignored molecule identity and scored cell lines only from observed ZIP values
@@ -43,7 +51,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
   - easiest examples: `HL-60(TB)`, `MOLT-4`
   - hardest examples: `UO-31`, `HOP-92`
 
-### 4. Cell-line-only predictive model
+### Stage 1.0D. Cell-line-only predictive model
 
 - Built a predictive dataset with:
   - `59` cell lines
@@ -60,16 +68,22 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 
 ## Next
 
-### 5. Baseline diagnosis
+### Stage 1.1. Baseline variant diagnostics
 
-- Re-check baseline quality:
-  - compare against naive mean baseline
-  - inspect prediction distribution
-  - verify normalization choices
+- Re-check baseline quality with explicit baseline variants:
+  - compare genes on vs genes off
+  - compare `CellLine[0]`, `CellLine[1]`, `CellLine[2]`
+  - compare split strategies:
+    - `random`
+    - `cell_line`
+    - `drug`
+    - `drug_pair`
+  - run `10`-fold CV, ideally stratified, on `10K` first and then full data
+  - verify training stability under smaller LR / modest epoch count
 - Results:
   - `________________`
 
-### 6. Step 1B: modular gene encoder
+### Stage 1.2. Modular gene encoder
 
 - Replace raw `gene_expr` with:
   - `z_cell = encoder(gene_expr)`
@@ -79,7 +93,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Results:
   - `________________`
 
-### 7. Gene filtering idea
+### Stage 1.2A. Gene filtering idea
 
 - Test filtering genes with value `> 2.3`
 - Keep both:
@@ -94,7 +108,7 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Results:
   - `________________`
 
-### 8. Compression baselines
+### Stage 1.3. Compression baselines
 
 - Compare:
   - simple filtering + MLP
@@ -104,7 +118,22 @@ Improve the gene expression encoder for drug synergy prediction on TDC DrugComb.
 - Results:
   - `________________`
 
-### 9. Longer-term
+### Stage 1.3A. z-score -> variance top-k -> PCA128
+
+- New root-level module: `data_compression/`
+- Current pipeline dir:
+  - `data_compression/zscore_var_pca_128/`
+- Data layout:
+  - raw CSV moved to `data_compression/zscore_var_pca_128/data/drugcomb_raw.csv`
+  - compressed export written to `data_compression/zscore_var_pca_128/data/drugcomb.csv`
+- Technical note:
+  - the raw CSV is kept for provenance
+  - actual raw `CellLine[0]` vectors are read from `drug_synergy_baseline/data/drugcomb.pkl`
+  - because DrugComb has only `59` unique cell lines here, PCA rank is limited and the 128-d output is padded beyond the effective rank
+- Result:
+  - `________________`
+
+### Stage 2. Longer-term
 
 - Map gene indices to gene names
 - Add biological priors:

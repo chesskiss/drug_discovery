@@ -1,6 +1,13 @@
 # Baseline Variant TODO
 
+Stage ID: `1.1`
+
 Goal: establish how strong and stable the current baseline is before changing gene compression.
+
+This file tracks the current research stage:
+
+- `Stage 1.1` = baseline variant diagnostics before any new gene-compression model is introduced
+- `Stage 1.3A` = first explicit compression export: `z-score -> variance top-k -> PCA128`
 
 ## Completed Setup
 
@@ -90,3 +97,18 @@ Goal: establish how strong and stable the current baseline is before changing ge
   - which cell-line view is the best current baseline
   - whether the model fails mainly on unseen drugs or unseen cell lines
   - whether current hyperparameters are obviously unstable
+
+## Next Compression Step
+
+- [ ] `Stage 1.3A: z-score -> variance top-k -> PCA128`
+  - Build compressed export from the repository root:
+    - `/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/.venv/bin/python -m data_compression.zscore_var_pca_128.build`
+  - Copy the generated file back into baseline data when ready:
+    - `cp /Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/zscore_var_pca_128/data/drugcomb.csv /Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/data/drugcomb.csv`
+  - Run baseline on the compressed file:
+    - `cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline`
+    - `uv run python -m src.train --synergy-path data/drugcomb.csv --cell-expression-path data/drugcomb.csv --cell-feature-view 0 --output-dir outputs/pca128_random --split-strategy random --epochs 10 --seed 42`
+  - Record:
+    - output gene dimension
+    - test RMSE / Pearson / Spearman
+    - whether the compressed branch still collapses to constant predictions

@@ -14,7 +14,7 @@ or with the baseline environment:
 
 ```bash
 cd drug_synergy_baseline
-uv run python -m cell_line_difficulty.src.cell_line_difficulty.cli --input data/drugcomb_synergy.csv --output-dir ../cell_line_difficulty/outputs
+uv run python -m cell_line_difficulty.src.cell_line_difficulty.cli --input data/drugcomb.csv --output-dir ../cell_line_difficulty/outputs
 ```
 
 ## Outputs

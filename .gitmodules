@@ -1,0 +1,3 @@
+[submodule "sota_reference_model"]
+	path = sota_reference_model
+	url = https://github.com/tastanlab/matchmaker

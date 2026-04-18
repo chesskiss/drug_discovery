@@ -48,6 +48,16 @@ uv run python -m src.train --macro-preset practical_research --lr 3e-4 --epochs 
 
 The `deep_synergy_reference` preset is adapted from the DeepSynergy paper, which reported that a small learning rate (`1e-5`), conic hidden layers, and dropout were important for performance on this task family. Source: [DeepSynergy (PMC)](https://pmc.ncbi.nlm.nih.gov/articles/PMC5925774/) and [PubMed](https://pubmed.ncbi.nlm.nih.gov/29253077/).
 
+## Results Tracking
+
+Use the canonical experiment tracker in [results/README.md](/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/results/README.md).
+
+Refresh the tables after any run completes:
+
+```bash
+uv run python -m src.results_tracking
+```
+
 ## Run pipeline
 
 ```bash
@@ -155,14 +165,18 @@ Single-run outputs:
 
 - `outputs/<run_name>/metrics.json`
 - `outputs/<run_name>/config.json`
+- `outputs/<run_name>/history.csv`
 - `outputs/<run_name>/val_predictions.csv`
 - `outputs/<run_name>/test_predictions.csv`
+- `outputs/training_curves/<run_name>/loss_curve.png`
 
 Cross-validation outputs:
 
 - `outputs/<run_name>/cv_metrics.json`
 - `outputs/<run_name>/cv_runs.csv`
 - `outputs/<run_name>/cv_test_predictions.csv`
+- `outputs/<run_name>/fold_runs/<fold_name>/history.csv`
+- `outputs/training_curves/<run_name>/fold_runs/<fold_name>/loss_curve.png`
 
 ### What to compare
 

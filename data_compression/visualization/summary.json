@@ -1,0 +1,37 @@
+{
+  "input": "outputs/drugcomb.csv",
+  "rows_before": 32572,
+  "rows_after": 32572,
+  "cols": 11,
+  "detected_columns": {
+    "drug_a": "Drug1",
+    "drug_b": "Drug2",
+    "cell_line": "CellLine",
+    "target": "Synergy_ZIP"
+  },
+  "missing_rate_top10": {
+    "Drug1_ID": 0.0,
+    "Drug2_ID": 0.0,
+    "Cell_Line_ID": 0.0,
+    "CSS": 0.0,
+    "Synergy_ZIP": 0.0,
+    "Synergy_Bliss": 0.0,
+    "Synergy_Loewe": 0.0,
+    "Synergy_HSA": 0.0,
+    "Drug1": 0.0,
+    "Drug2": 0.0
+  },
+  "target_describe": {
+    "count": 32572.0,
+    "mean": -0.6267075517575926,
+    "std": 5.514355028297734,
+    "min": -26.0942179923737,
+    "25%": -3.5816718148007727,
+    "50%": -0.6203236994076775,
+    "75%": 1.914232174304835,
+    "max": 45.1262000817639
+  },
+  "unique_cells": 59,
+  "unique_drug_a": 13,
+  "unique_drug_b": 117
+}

@@ -18,6 +18,7 @@ from .dataset import (
 )
 from .macros import DEFAULT_MACRO_FILE, DEFAULT_MACRO_PRESET, load_macro_preset
 from .model import build_baseline_model
+from .training_artifacts import build_curve_figure_path, save_history_csv, save_json, save_loss_curve
 
 
 GENE_FEATURE_SET_TO_VIEW = {
@@ -239,44 +240,52 @@ def train_once(
         "test_targets": test_targets,
     }
 
-    if save_artifacts and output_dir is not None:
+    if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
-        model_path = output_dir / "baseline_mlp.pt"
         metrics_path = output_dir / "metrics.json"
         config_path = output_dir / "config.json"
+        history_path = output_dir / "history.csv"
+        curve_path = build_curve_figure_path(output_dir, run_label)
+
+        config_payload = {
+            "model_type": "DeepSynergyMLP",
+            "synergy_path": args.synergy_path,
+            "cell_expression_path": args.cell_expression_path,
+            "fallback_pickle_path": args.fallback_pickle_path,
+            "macro_file": args.macro_file,
+            "macro_preset": args.macro_preset,
+            "drug_dim": datasets.drug_dim,
+            "gene_dim": datasets.gene_dim,
+            "hidden_dims": args.hidden_dims,
+            "dropout": args.dropout,
+            "seed": run_seed,
+            "lr": args.lr,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "split_strategy": args.split_strategy,
+            "use_gene_expression": args.use_gene_expression,
+            "gene_feature_set": args.gene_feature_set if args.use_gene_expression else None,
+            "cell_feature_view": resolve_cell_feature_view(args) if args.use_gene_expression else None,
+            "cell_encoder_type": "identity",
+            "cell_latent_dim": datasets.gene_dim,
+        }
+
+        save_json(config_path, config_payload)
+        save_json(metrics_path, metrics)
+        save_history_csv(history_path, history)
+        save_loss_curve(curve_path, history, run_label)
+
+        print(f"[{run_label}] Saved metrics to {metrics_path}")
+        print(f"[{run_label}] Saved config to {config_path}")
+        print(f"[{run_label}] Saved epoch history to {history_path}")
+        print(f"[{run_label}] Saved loss curve to {curve_path}")
+
+    if save_artifacts and output_dir is not None:
+        model_path = output_dir / "baseline_mlp.pt"
         val_predictions_path = output_dir / "val_predictions.csv"
         test_predictions_path = output_dir / "test_predictions.csv"
 
         torch.save(model.state_dict(), model_path)
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "model_type": "DeepSynergyMLP",
-                    "synergy_path": args.synergy_path,
-                    "cell_expression_path": args.cell_expression_path,
-                    "fallback_pickle_path": args.fallback_pickle_path,
-                    "macro_file": args.macro_file,
-                    "macro_preset": args.macro_preset,
-                    "drug_dim": datasets.drug_dim,
-                    "gene_dim": datasets.gene_dim,
-                    "hidden_dims": args.hidden_dims,
-                    "dropout": args.dropout,
-                    "seed": run_seed,
-                    "lr": args.lr,
-                    "epochs": args.epochs,
-                    "batch_size": args.batch_size,
-                    "split_strategy": args.split_strategy,
-                    "use_gene_expression": args.use_gene_expression,
-                    "gene_feature_set": args.gene_feature_set if args.use_gene_expression else None,
-                    "cell_feature_view": resolve_cell_feature_view(args) if args.use_gene_expression else None,
-                    "cell_encoder_type": "identity",
-                    "cell_latent_dim": datasets.gene_dim,
-                },
-                f,
-                indent=2,
-            )
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, indent=2)
 
         val_predictions_df = datasets.val_rows.copy().rename(columns={"target": "y_true"})
         val_predictions_df["y_pred"] = val_predictions
@@ -287,8 +296,6 @@ def train_once(
         test_predictions_df.to_csv(test_predictions_path, index=False)
 
         print(f"[{run_label}] Saved model to {model_path}")
-        print(f"[{run_label}] Saved metrics to {metrics_path}")
-        print(f"[{run_label}] Saved config to {config_path}")
         print(f"[{run_label}] Saved validation predictions to {val_predictions_path}")
         print(f"[{run_label}] Saved test predictions to {test_predictions_path}")
 
@@ -384,7 +391,15 @@ def run_cross_validation(args: argparse.Namespace) -> None:
                 gene_dim=gene_dim,
             )
             run_label = f"cv_seed_{seed}_fold_{fold_idx + 1}"
-            metrics, eval_outputs = train_once(datasets, args, run_seed=seed, run_label=run_label)
+            fold_output_dir = output_dir / "fold_runs" / run_label
+            metrics, eval_outputs = train_once(
+                datasets,
+                args,
+                run_seed=seed,
+                output_dir=fold_output_dir,
+                save_artifacts=False,
+                run_label=run_label,
+            )
             metrics["cv_seed"] = seed
             metrics["cv_fold"] = fold_idx + 1
             per_fold_metrics.append(metrics)

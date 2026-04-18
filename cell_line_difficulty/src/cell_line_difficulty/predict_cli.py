@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--synergy-path",
         type=str,
-        default="drug_synergy_baseline/data/drugcomb_synergy.csv",
+        default="drug_synergy_baseline/data/drugcomb.csv",
         help="Path to DrugComb synergy CSV",
     )
     parser.add_argument(
