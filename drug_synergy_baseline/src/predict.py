@@ -11,13 +11,32 @@ from .dataset import smiles_to_vector
 from .model import build_baseline_model
 
 
+GENE_FEATURE_SET_TO_VIEW = {
+    "raw": 0,
+    "filtered": 1,
+    "compact": 2,
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run single-sample synergy prediction with a trained baseline model")
     parser.add_argument("--model-path", type=str, default="outputs/baseline_mlp.pt")
     parser.add_argument("--config-path", type=str, default="outputs/config.json")
-    parser.add_argument("--synergy-path", type=str, default="data/drugcomb_synergy.csv")
-    parser.add_argument("--cell-expression-path", type=str, default="data/cell_line_gene_expression.csv")
+    parser.add_argument("--synergy-path", type=str, default="data/drugcomb.csv")
+    parser.add_argument("--cell-expression-path", type=str, default=None)
     parser.add_argument("--fallback-pickle-path", type=str, default="data/drugcomb.pkl")
+    parser.add_argument(
+        "--gene-feature-set",
+        choices=sorted(GENE_FEATURE_SET_TO_VIEW),
+        default=None,
+        help="Optional override for the named CellLine view",
+    )
+    parser.add_argument(
+        "--cell-feature-view",
+        type=int,
+        default=None,
+        help="Optional override for the numeric CellLine view",
+    )
     parser.add_argument("--smiles-a", type=str, default=None)
     parser.add_argument("--smiles-b", type=str, default=None)
     parser.add_argument("--cell-line", type=str, default=None)
@@ -39,6 +58,18 @@ def get_device(preferred: str | None) -> torch.device:
 def load_config(path: str | Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def resolve_cell_feature_view(args: argparse.Namespace, config: dict) -> int:
+    if args.gene_feature_set is not None:
+        return GENE_FEATURE_SET_TO_VIEW[args.gene_feature_set]
+    if args.cell_feature_view is not None:
+        return int(args.cell_feature_view)
+    if config.get("cell_feature_view") is not None:
+        return int(config["cell_feature_view"])
+    if config.get("gene_feature_set") in GENE_FEATURE_SET_TO_VIEW:
+        return GENE_FEATURE_SET_TO_VIEW[config["gene_feature_set"]]
+    return 0
 
 
 def load_model(config: dict, model_path: str | Path, device: torch.device):
@@ -89,6 +120,7 @@ def main() -> None:
     expression_lookup = load_expression_lookup(
         cell_expression_path=args.cell_expression_path,
         fallback_pickle_path=args.fallback_pickle_path,
+        feature_view_index=resolve_cell_feature_view(args, config),
     )
     cell_line = str(sample["cell_line"])
     if cell_line not in expression_lookup:

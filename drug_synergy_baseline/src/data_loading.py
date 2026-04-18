@@ -83,33 +83,75 @@ def load_cell_expression_table(path: str | Path) -> dict[str, np.ndarray]:
     return expr
 
 
+def _parse_cellline_payload(value: object) -> list[np.ndarray]:
+    if isinstance(value, (list, tuple)):
+        return [np.asarray(item, dtype=np.float32) for item in value]
+
+    if isinstance(value, str):
+        if "..." in value:
+            raise ValueError(
+                "Embedded CellLine CSV text is truncated with ellipsis. "
+                "A non-truncated source (for example the original pickle/export) is required for views 0 and 1."
+            )
+        try:
+            parsed = eval(value, {"__builtins__": {}}, {"array": np.array})  # noqa: S307
+        except Exception as exc:  # pragma: no cover - defensive parse guard
+            raise ValueError("Could not parse embedded CellLine payload from CSV text.") from exc
+        if isinstance(parsed, (list, tuple)):
+            return [np.asarray(item, dtype=np.float32) for item in parsed]
+
+    raise TypeError("Unsupported CellLine payload; expected list/tuple or a parseable string representation.")
+
+
+def load_embedded_cellline_table(
+    path: str | Path,
+    *,
+    feature_view_index: int = 0,
+) -> dict[str, np.ndarray]:
+    df = load_table(path)
+    columns = list(df.columns)
+    cell_col = _pick_first_existing(columns, ["Cell_Line_ID", "cell_line", "CellLine"], "cell line")
+    embedded_col = _pick_first_existing(columns, ["CellLine"], "embedded cell features")
+
+    lookup: dict[str, np.ndarray] = {}
+    for _, row in df[[cell_col, embedded_col]].dropna().iterrows():
+        cell_line = str(row[cell_col])
+        features = _parse_cellline_payload(row[embedded_col])
+        if feature_view_index >= len(features):
+            raise IndexError(
+                f"Requested CellLine view index {feature_view_index}, but only {len(features)} views are available."
+            )
+        lookup.setdefault(cell_line, np.asarray(features[feature_view_index], dtype=np.float32))
+    return lookup
+
+
 def load_expression_lookup(
     cell_expression_path: str | Path | None,
     fallback_pickle_path: str | Path | None = None,
+    feature_view_index: int = 0,
 ) -> dict[str, np.ndarray]:
     if cell_expression_path is not None and Path(cell_expression_path).exists():
+        preview = load_table(cell_expression_path).head(1)
+        if "CellLine" in preview.columns:
+            lookup = load_embedded_cellline_table(
+                cell_expression_path,
+                feature_view_index=feature_view_index,
+            )
+            if lookup:
+                return lookup
         return load_cell_expression_table(cell_expression_path)
 
     if fallback_pickle_path is not None and Path(fallback_pickle_path).exists():
-        df = load_table(fallback_pickle_path)
-        cell_col = _pick_first_existing(list(df.columns), ["Cell_Line_ID", "cell_line", "CellLine"], "cell line")
-        embedded_col = _pick_first_existing(list(df.columns), ["CellLine"], "embedded cell features")
-
-        lookup: dict[str, np.ndarray] = {}
-        for _, row in df[[cell_col, embedded_col]].dropna().iterrows():
-            cell_line = str(row[cell_col])
-            features = row[embedded_col]
-            if not isinstance(features, (list, tuple)) or len(features) == 0:
-                continue
-            gene_expr = np.asarray(features[0], dtype=np.float32)
-            lookup.setdefault(cell_line, gene_expr)
-
+        lookup = load_embedded_cellline_table(
+            fallback_pickle_path,
+            feature_view_index=feature_view_index,
+        )
         if lookup:
             return lookup
 
     raise FileNotFoundError(
-        "Could not load cell expression features. Expected `data/cell_line_gene_expression.csv` "
-        "or a fallback pickle with embedded cell features."
+        "Could not load cell expression features. Expected a numeric cell-expression table "
+        "or a file with embedded `CellLine` payloads."
     )
 
 

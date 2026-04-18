@@ -1,0 +1,32 @@
+[practical_research]
+description = "Stable default for current baseline experiments on compressed or filtered cell-line features."
+epochs = 50
+batch_size = 64
+lr = 0.0001
+smiles_dim = 256
+hidden_dims = [1024, 512]
+dropout = 0.3
+train_fraction = 0.8
+val_fraction = 0.1
+
+[deep_synergy_reference]
+description = "Literature-inspired preset adapted from the DeepSynergy paper. The paper reported a small learning rate (1e-5), conic hidden layers, and dropout regularization as important. This runner has one shared dropout knob, so it uses 0.5 rather than separate input/hidden dropout."
+epochs = 100
+batch_size = 64
+lr = 0.00001
+smiles_dim = 256
+hidden_dims = [8192, 4096]
+dropout = 0.5
+train_fraction = 0.8
+val_fraction = 0.1
+
+[fast_debug]
+description = "Cheap smoke-test preset for wiring checks only."
+epochs = 3
+batch_size = 32
+lr = 0.001
+smiles_dim = 256
+hidden_dims = [256, 128]
+dropout = 0.2
+train_fraction = 0.8
+val_fraction = 0.1
