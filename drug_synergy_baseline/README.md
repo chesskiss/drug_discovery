@@ -58,10 +58,86 @@ Refresh the tables after any run completes:
 uv run python -m src.results_tracking
 ```
 
+Backfill regression plots from existing saved predictions without retraining:
+
+```bash
+uv run python -m src.backfill_regression_plots --run long_cv10_10k_pca128_drug_and_cell_line_practical --kind cv
+```
+
+Backfill all available regression plots:
+
+```bash
+uv run python -m src.backfill_regression_plots --kind all
+```
+
 ## Run pipeline
 
 ```bash
 uv run python -m src.train --synergy-path data/drugcomb.csv --fallback-pickle-path data/drugcomb.pkl --output-dir outputs
+```
+
+## Top-Level Program Flow
+
+```text
+Raw DrugComb / pickle data
+        |
+        v
+data_compression/
+download / inspect / compress cell-line features
+        |
+        v
+drug_synergy_baseline/data/drugcomb.csv
+prepared training table
+        |
+        v
+drug_synergy_baseline/src/train.py
+load data -> split -> build datasets -> train/eval model
+        |
+        v
+outputs/
+metrics, predictions, checkpoints, plots
+        |
+        v
+results_tracking.py
+canonical experiment tables
+```
+
+## Main Baseline Flow
+
+```text
+CLI command
+uv run python -m src.train
+        |
+        v
+[train.py]
+parse args + macro preset
+        |
+        v
+[dataset.py]
+load aligned rows + build split
+        |
+        v
+[data_loading.py]
+read CSV / pickle and cell-line features
+        |
+        v
+[dataset.py]
+convert rows into PyTorch datasets
+        |
+        v
+[model.py]
+build DeepSynergyMLP
+        |
+        v
+[train.py]
+train loop / validation / test / CV
+        |
+        v
+[training_artifacts.py]
+save metrics, history, curves, regression plots
+        |
+        v
+outputs/<run_name>/
 ```
 
 ## Stage 1.1: Baseline Variant Diagnostics
@@ -196,6 +272,7 @@ Single-run outputs:
 - `outputs/<run_name>/val_predictions.csv`
 - `outputs/<run_name>/test_predictions.csv`
 - `outputs/training_curves/<run_name>/loss_curve.png`
+- `outputs/training_curves/<run_name>/test_regression.png`
 
 Cross-validation outputs:
 
@@ -204,6 +281,8 @@ Cross-validation outputs:
 - `outputs/<run_name>/cv_test_predictions.csv`
 - `outputs/<run_name>/fold_runs/<fold_name>/history.csv`
 - `outputs/training_curves/<run_name>/fold_runs/<fold_name>/loss_curve.png`
+- `outputs/training_curves/<run_name>/fold_runs/<fold_name>/test_regression.png`
+- `outputs/training_curves/<run_name>/cv_test_regression.png`
 
 ### What to compare
 
@@ -214,6 +293,15 @@ For Stage `1.1`, compare these fields first:
 - `test_spearman`
 - `test_mean_baseline_mse`
 - training history in `metrics.json`
+
+Regression plot meaning:
+
+- x-axis = true test `Synergy_ZIP`
+- y-axis = model prediction for the same point
+- each dot = one held-out test example
+- dashed diagonal = perfect prediction
+- tighter concentration around the diagonal means better calibration and lower error
+- a horizontal band means the model is collapsing toward near-constant predictions
 
 Run single-sample prediction with:
 

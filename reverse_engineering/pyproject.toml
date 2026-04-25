@@ -1,0 +1,11 @@
+[project]
+name = "reverse-engineering"
+version = "0.1.0"
+description = "Reverse-engineering and attribution utilities for DrugComb baseline models"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "torch",
+]

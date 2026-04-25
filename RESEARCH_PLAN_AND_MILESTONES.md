@@ -364,6 +364,30 @@ Priority:
 2. `z-score -> BioFilter1k-3k -> AE128`: more interpretable but depends on reliable gene mapping.
 3. `raw -> AE128`: hardest to stabilize; avoid until simpler methods are exhausted.
 
+### Optional Milestone. Upstream Expression Preprocessing Audit
+
+Status: optional, lower priority.
+
+Question:
+
+- are the current cell-line expression views already sufficiently normalized for this task
+- or is there useful signal/noise tradeoff in revisiting upstream preprocessing
+
+Candidate methods to evaluate only if needed:
+
+- quantile normalization
+- FARMS (`Factor Analysis for Robust Microarray Summarization`)
+
+Practical framing:
+
+- quantile normalization may help only if the current views are not already normalized appropriately across cell lines
+- FARMS is mainly a probe-to-gene summarization method from microarray preprocessing, so it is more relevant only if lower-level probe measurements become available or the current representation can be rebuilt from that stage
+
+Decision rule:
+
+- do not prioritize this before attribution/OCA and encoder experiments
+- revisit only if raw-gene pipelines remain unstable and there is evidence that preprocessing, not architecture, is the bottleneck
+
 ### Stage 1.4. MLP Reverse-Engineering And Attribution
 
 Status: planned for the upcoming weeks.

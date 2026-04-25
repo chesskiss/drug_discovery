@@ -20,7 +20,14 @@ from .dataset import (
 )
 from .macros import DEFAULT_MACRO_FILE, DEFAULT_MACRO_PRESET, load_macro_preset
 from .model import build_baseline_model
-from .training_artifacts import build_curve_figure_path, save_history_csv, save_json, save_loss_curve
+from .training_artifacts import (
+    build_curve_figure_path,
+    build_regression_figure_path,
+    save_history_csv,
+    save_json,
+    save_loss_curve,
+    save_regression_plot,
+)
 
 
 GENE_FEATURE_SET_TO_VIEW = {
@@ -252,6 +259,7 @@ def train_once(
         config_path = output_dir / "config.json"
         history_path = output_dir / "history.csv"
         curve_path = build_curve_figure_path(output_dir, run_label)
+        regression_path = build_regression_figure_path(output_dir, run_label)
 
         config_payload = {
             "model_type": "DeepSynergyMLP",
@@ -280,11 +288,20 @@ def train_once(
         save_json(metrics_path, metrics)
         save_history_csv(history_path, history)
         save_loss_curve(curve_path, history, run_label)
+        save_regression_plot(
+            regression_path,
+            targets=test_targets,
+            predictions=test_predictions,
+            run_label=run_label,
+            mse=test_mse,
+            pearson=test_pearson,
+        )
 
         print(f"[{run_label}] Saved metrics to {metrics_path}")
         print(f"[{run_label}] Saved config to {config_path}")
         print(f"[{run_label}] Saved epoch history to {history_path}")
         print(f"[{run_label}] Saved loss curve to {curve_path}")
+        print(f"[{run_label}] Saved test regression plot to {regression_path}")
 
     if save_artifacts and output_dir is not None:
         model_path = output_dir / "baseline_mlp.pt"
@@ -482,12 +499,26 @@ def run_cross_validation(args: argparse.Namespace) -> None:
         json.dump(summary, f, indent=2)
     summary_frame.to_csv(output_dir / "cv_runs.csv", index=False)
     if all_test_predictions:
-        pd.concat(all_test_predictions, ignore_index=True).to_csv(output_dir / "cv_test_predictions.csv", index=False)
+        combined_predictions = pd.concat(all_test_predictions, ignore_index=True)
+        combined_predictions.to_csv(output_dir / "cv_test_predictions.csv", index=False)
+
+        regression_path = build_regression_figure_path(output_dir, "cv_aggregate", aggregate=True)
+        aggregate_test_mse = float(summary_frame["test_mse"].mean())
+        aggregate_test_pearson = float(summary_frame["test_pearson"].mean())
+        save_regression_plot(
+            regression_path,
+            targets=combined_predictions["y_true"].tolist(),
+            predictions=combined_predictions["y_pred"].tolist(),
+            run_label="cv_aggregate",
+            mse=aggregate_test_mse,
+            pearson=aggregate_test_pearson,
+        )
 
     print(f"Saved CV summary to {output_dir / 'cv_metrics.json'}")
     print(f"Saved per-run metrics to {output_dir / 'cv_runs.csv'}")
     if all_test_predictions:
         print(f"Saved CV test predictions to {output_dir / 'cv_test_predictions.csv'}")
+        print(f"Saved CV test regression plot to {regression_path}")
 
 
 def main() -> None:
