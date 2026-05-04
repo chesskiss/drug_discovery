@@ -1,9 +1,10 @@
 {
   "method_id": "1.3A",
   "pipeline_name": "zscore_var_pca_128",
-  "input_pickle": "drug_synergy_baseline/data/drugcomb.pkl",
-  "input_raw_csv": "data_compression/zscore_var_pca_128/data/drugcomb_raw.csv",
-  "output_csv": "data_compression/zscore_var_pca_128/data/drugcomb.csv",
+  "input_pickle": "/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/source_data/drugcomb.pkl",
+  "input_raw_csv": "/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/zscore_var_pca_128/data/drugcomb_raw.csv",
+  "output_csv": "/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/zscore_var_pca_128/data/drugcomb.csv",
+  "artifacts_npz": "/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/zscore_var_pca_128/data/pca_artifacts.npz",
   "raw_view_index": 0,
   "raw_feature_dim": 23808,
   "unique_cell_lines": 59,

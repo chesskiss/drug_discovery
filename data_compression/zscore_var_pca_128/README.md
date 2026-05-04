@@ -4,7 +4,7 @@ This pipeline prepares a compressed `drugcomb.csv` for the baseline model.
 
 ## Pipeline
 
-1. Load raw `CellLine[0]` vectors from `drug_synergy_baseline/data/drugcomb.pkl`.
+1. Load raw `CellLine[0]` vectors from `data_compression/source_data/drugcomb.pkl`.
 2. Rank raw features by weighted variance across cell lines.
 3. Keep the top `k` features.
 4. Z-score the selected features.
@@ -41,9 +41,9 @@ From the repository root:
 Custom example:
 
 ```bash
-/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/.venv/bin/python \
+  /Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/.venv/bin/python \
   -m data_compression.zscore_var_pca_128.build \
-  --input-pickle drug_synergy_baseline/data/drugcomb.pkl \
+  --input-pickle data_compression/source_data/drugcomb.pkl \
   --output-csv data_compression/zscore_var_pca_128/data/drugcomb.csv \
   --variance-top-k 3000 \
   --pca-components 128
@@ -53,3 +53,12 @@ Custom example:
 
 - `data_compression/zscore_var_pca_128/data/drugcomb.csv`
 - `data_compression/zscore_var_pca_128/data/metadata.json`
+- `data_compression/zscore_var_pca_128/data/pca_artifacts.npz`
+
+`pca_artifacts.npz` stores the full arrays needed for later component-to-gene back-mapping:
+
+- `selected_feature_indices`
+- `component_matrix`
+- `explained_variance`
+- `selected_feature_mean`
+- `selected_feature_std`

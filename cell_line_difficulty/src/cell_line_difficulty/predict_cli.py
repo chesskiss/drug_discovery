@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pickle-path",
         type=str,
-        default="drug_synergy_baseline/data/drugcomb.pkl",
+        default="data_compression/source_data/drugcomb.pkl",
         help="Path to DrugComb pickle with full CellLine payloads",
     )
     parser.add_argument(

@@ -24,7 +24,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config-path", type=str, default="outputs/config.json")
     parser.add_argument("--synergy-path", type=str, default="data/drugcomb.csv")
     parser.add_argument("--cell-expression-path", type=str, default=None)
-    parser.add_argument("--fallback-pickle-path", type=str, default="data/drugcomb.pkl")
+    parser.add_argument(
+        "--fallback-pickle-path",
+        type=str,
+        default="../data_compression/source_data/drugcomb.pkl",
+    )
     parser.add_argument(
         "--gene-feature-set",
         choices=sorted(GENE_FEATURE_SET_TO_VIEW),

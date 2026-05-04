@@ -267,7 +267,7 @@ Method:
 
 Pipeline:
 
-1. read raw `CellLine[0]` vectors from `drugcomb.pkl`
+1. read raw `CellLine[0]` vectors from `data_compression/source_data/drugcomb.pkl`
 2. rank genes/features by weighted variance
 3. keep top `3000`
 4. z-score selected features

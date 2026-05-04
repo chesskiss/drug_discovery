@@ -70,10 +70,30 @@ Backfill all available regression plots:
 uv run python -m src.backfill_regression_plots --kind all
 ```
 
+## OCA / Attribution
+
+Run component-level occlusion attribution on a saved single-run checkpoint:
+
+```bash
+uv run python -m src.oca \
+  --model-path outputs/pca128_random/baseline_mlp.pt \
+  --config-path outputs/pca128_random/config.json
+```
+
+This first pass is single-run only. CV runs are out of scope because fold checkpoints are not saved.
+
+Artifacts are written under `outputs/<run>/oca/`:
+
+- `component_importance.csv`
+- `local_explanations.csv`
+- `component_importance_topk.png`
+- `local_explanations_heatmap.png`
+- `oca_summary.json`
+
 ## Run pipeline
 
 ```bash
-uv run python -m src.train --synergy-path data/drugcomb.csv --fallback-pickle-path data/drugcomb.pkl --output-dir outputs
+uv run python -m src.train --synergy-path data/drugcomb.csv --fallback-pickle-path ../data_compression/source_data/drugcomb.pkl --output-dir outputs
 ```
 
 ## Top-Level Program Flow
@@ -156,7 +176,7 @@ Run all commands from `/Users/arnoldcheskis/Documents/Projects/drug_discovery/dr
 Default data behavior after you place a prepared compressed file back into baseline `data/`:
 
 - synergy rows: `data/drugcomb.csv`
-- gene/cell-line source: `data/drugcomb.pkl`
+- gene/cell-line source: `../data_compression/source_data/drugcomb.pkl`
 - use the pickle for gene-on experiments because CSV `CellLine` payloads may be truncated
 
 ### Current runner features
@@ -327,7 +347,7 @@ Current method:
 Important:
 
 - the raw CSV now lives at [drugcomb_raw.csv](/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/zscore_var_pca_128/data/drugcomb_raw.csv)
-- because CSV `CellLine` payloads are truncated, the compression pipeline reads raw vectors from [drugcomb.pkl](/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/data/drugcomb.pkl)
+- because CSV `CellLine` payloads are truncated, the compression pipeline reads raw vectors from [drugcomb.pkl](/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/source_data/drugcomb.pkl)
 - the pipeline output is [drugcomb.csv](/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/zscore_var_pca_128/data/drugcomb.csv)
 - once validated, that output can be copied or moved back into `drug_synergy_baseline/data/drugcomb.csv` for baseline training
 

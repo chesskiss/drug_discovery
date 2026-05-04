@@ -6,6 +6,10 @@ from pathlib import Path
 import pandas as pd
 
 
+MODULE_DIR = Path(__file__).resolve().parent
+DEFAULT_SAVE_DIR = MODULE_DIR / "zscore_var_pca_128" / "data"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Download DrugComb synergy rows and TDC cell-feature tables."
@@ -13,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save-dir",
         type=str,
-        default="data_compression/zscore_var_pca_128/data",
+        default=str(DEFAULT_SAVE_DIR),
         help="Directory where downloaded files will be written",
     )
     parser.add_argument(
@@ -65,7 +69,7 @@ def _build_reduced_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def download_drugcomb_with_genes(
-    save_dir: str = "data_compression/zscore_var_pca_128/data",
+    save_dir: str | Path = DEFAULT_SAVE_DIR,
     *,
     raw_filename: str = "drugcomb_raw.csv",
     reduced_filename: str = "reduced_drugcomb.csv",

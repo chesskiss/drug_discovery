@@ -8,6 +8,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
+MODULE_DIR = Path(__file__).resolve().parent
+DEFAULT_INPUT = MODULE_DIR / "zscore_var_pca_128" / "data" / "drugcomb_raw.csv"
+DEFAULT_OUTPUT_DIR = MODULE_DIR / "visualization"
+
 DRUG_A_FALLBACK = ["Drug1", "Drug1_ID", "drug1", "drug_a", "drug_a_id"]
 DRUG_B_FALLBACK = ["Drug2", "Drug2_ID", "drug2", "drug_b", "drug_b_id"]
 CELL_FALLBACK = ["CellLine", "Cell_Line_ID", "cell_line", "cell", "cellline"]
@@ -19,10 +23,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=str,
-        default="data_compression/zscore_var_pca_128/data/drugcomb_raw.csv",
+        default=str(DEFAULT_INPUT),
         help="Input file (csv/tsv/txt/parquet)",
     )
-    parser.add_argument("--output-dir", type=str, default="outputs/visualization", help="Directory for plots and summary")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory for plots and summary",
+    )
     parser.add_argument(
         "--preprocess",
         action="store_true",

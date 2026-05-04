@@ -72,29 +72,54 @@ Interpretation:
 
 ## Commands
 
-Build the compressed export:
+Initialize the module environment:
 
 ```bash
-cd /Users/arnoldcheskis/Documents/Projects/drug_discovery
-/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/.venv/bin/python \
-  -m data_compression.zscore_var_pca_128.build
-```
-
-Run the data visualization utility:
-
-```bash
-cd /Users/arnoldcheskis/Documents/Projects/drug_discovery
-/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/.venv/bin/python \
-  -m data_compression.visualize \
-  --input data_compression/zscore_var_pca_128/data/drugcomb_raw.csv \
-  --output-dir data_compression/visualization \
-  --preprocess
+cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression
+uv sync
 ```
 
 Download DrugComb into this module:
 
 ```bash
-cd /Users/arnoldcheskis/Documents/Projects/drug_discovery
-/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/.venv/bin/python \
-  -m data_compression.download_drugcomb_tdc
+cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression
+uv run python -m download_drugcomb_tdc
+```
+
+This writes by default to:
+
+- `zscore_var_pca_128/data/drugcomb_raw.csv`
+- `zscore_var_pca_128/data/reduced_drugcomb.csv`
+- optionally `zscore_var_pca_128/data/tdc_cell_features.csv`
+
+Build the compressed export from inside this directory:
+
+```bash
+cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression
+uv run python -m zscore_var_pca_128.build
+```
+
+Important:
+
+- the compression step requires the full embedded `CellLine` payload source
+- by default it expects:
+  - `/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/source_data/drugcomb.pkl`
+- `drugcomb_raw.csv` alone is not enough for the PCA pipeline because CSV `CellLine` payloads may be truncated
+
+Run the data visualization utility:
+
+```bash
+cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression
+uv run python -m visualize \
+  --input zscore_var_pca_128/data/drugcomb_raw.csv \
+  --output-dir visualization \
+  --preprocess
+```
+
+Verify whether a CSV contains truncated `CellLine` payloads:
+
+```bash
+cd /Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression
+uv run python -m verify_cellline_payload \
+  --input zscore_var_pca_128/data/drugcomb_raw.csv
 ```

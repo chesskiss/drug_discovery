@@ -29,7 +29,7 @@ Primary data sources:
 
 - `data_compression/zscore_var_pca_128/data/drugcomb_raw.csv`
 - `data_compression/zscore_var_pca_128/data/drugcomb.csv`
-- `drug_synergy_baseline/data/drugcomb.pkl`
+- `data_compression/source_data/drugcomb.pkl`
 
 Main target:
 

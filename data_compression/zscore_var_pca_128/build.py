@@ -8,10 +8,13 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_INPUT_PICKLE = "drug_synergy_baseline/data/drugcomb.pkl"
-DEFAULT_INPUT_RAW_CSV = "data_compression/zscore_var_pca_128/data/drugcomb_raw.csv"
-DEFAULT_OUTPUT_CSV = "data_compression/zscore_var_pca_128/data/drugcomb.csv"
-DEFAULT_METADATA_JSON = "data_compression/zscore_var_pca_128/data/metadata.json"
+MODULE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = MODULE_DIR.parent.parent
+DEFAULT_INPUT_PICKLE = REPO_ROOT / "data_compression" / "source_data" / "drugcomb.pkl"
+DEFAULT_INPUT_RAW_CSV = MODULE_DIR / "data" / "drugcomb_raw.csv"
+DEFAULT_OUTPUT_CSV = MODULE_DIR / "data" / "drugcomb.csv"
+DEFAULT_METADATA_JSON = MODULE_DIR / "data" / "metadata.json"
+DEFAULT_ARTIFACTS_NPZ = MODULE_DIR / "data" / "pca_artifacts.npz"
 
 
 def parse_args() -> argparse.Namespace:
@@ -21,26 +24,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input-pickle",
         type=str,
-        default=DEFAULT_INPUT_PICKLE,
+        default=str(DEFAULT_INPUT_PICKLE),
         help="Non-truncated source with embedded CellLine payloads.",
     )
     parser.add_argument(
         "--input-raw-csv",
         type=str,
-        default=DEFAULT_INPUT_RAW_CSV,
+        default=str(DEFAULT_INPUT_RAW_CSV),
         help="Raw CSV path kept for provenance. It is not used for raw CellLine vectors because CSV payloads are truncated.",
     )
     parser.add_argument(
         "--output-csv",
         type=str,
-        default=DEFAULT_OUTPUT_CSV,
+        default=str(DEFAULT_OUTPUT_CSV),
         help="Where to write the compressed DrugComb CSV.",
     )
     parser.add_argument(
         "--metadata-json",
         type=str,
-        default=DEFAULT_METADATA_JSON,
+        default=str(DEFAULT_METADATA_JSON),
         help="Where to write pipeline metadata.",
+    )
+    parser.add_argument(
+        "--artifacts-npz",
+        type=str,
+        default=str(DEFAULT_ARTIFACTS_NPZ),
+        help="Where to write full PCA artifacts for later back-mapping.",
     )
     parser.add_argument(
         "--raw-view-index",
@@ -144,6 +153,7 @@ def build_compressed_export(
     input_pickle: str | Path,
     output_csv: str | Path,
     metadata_json: str | Path,
+    artifacts_npz: str | Path,
     *,
     input_raw_csv: str | Path,
     raw_view_index: int,
@@ -154,6 +164,7 @@ def build_compressed_export(
     input_raw_csv = Path(input_raw_csv)
     output_csv = Path(output_csv)
     metadata_json = Path(metadata_json)
+    artifacts_npz = Path(artifacts_npz)
 
     if not input_pickle.exists():
         raise FileNotFoundError(f"Pickle source not found: {input_pickle}")
@@ -196,7 +207,16 @@ def build_compressed_export(
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     metadata_json.parent.mkdir(parents=True, exist_ok=True)
+    artifacts_npz.parent.mkdir(parents=True, exist_ok=True)
     output_df.to_csv(output_csv, index=False)
+    np.savez_compressed(
+        artifacts_npz,
+        selected_feature_indices=selected_indices.astype(np.int32),
+        component_matrix=components.astype(np.float32),
+        explained_variance=explained_variance.astype(np.float32),
+        selected_feature_mean=selected_mean.astype(np.float32),
+        selected_feature_std=selected_std.astype(np.float32),
+    )
 
     metadata = {
         "method_id": "1.3A",
@@ -204,6 +224,7 @@ def build_compressed_export(
         "input_pickle": str(input_pickle),
         "input_raw_csv": str(input_raw_csv),
         "output_csv": str(output_csv),
+        "artifacts_npz": str(artifacts_npz),
         "raw_view_index": int(raw_view_index),
         "raw_feature_dim": int(raw_matrix.shape[1]),
         "unique_cell_lines": int(len(cell_lines)),
@@ -239,11 +260,13 @@ def main() -> None:
         input_raw_csv=args.input_raw_csv,
         output_csv=args.output_csv,
         metadata_json=args.metadata_json,
+        artifacts_npz=args.artifacts_npz,
         raw_view_index=args.raw_view_index,
         variance_top_k=args.variance_top_k,
         pca_components=args.pca_components,
     )
     print(f"[compression] Wrote compressed DrugComb CSV to {metadata['output_csv']}")
+    print(f"[compression] Wrote PCA artifacts to {metadata['artifacts_npz']}")
     print(f"[compression] Unique cell lines: {metadata['unique_cell_lines']}")
     print(f"[compression] Raw feature dim: {metadata['raw_feature_dim']}")
     print(f"[compression] Top-k selected: {metadata['variance_top_k_used']}")

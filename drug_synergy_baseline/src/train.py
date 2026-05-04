@@ -53,7 +53,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--synergy-path", type=str, default="data/drugcomb.csv")
     parser.add_argument("--cell-expression-path", type=str, default=None)
-    parser.add_argument("--fallback-pickle-path", type=str, default="data/drugcomb.pkl")
+    parser.add_argument(
+        "--fallback-pickle-path",
+        type=str,
+        default="../data_compression/source_data/drugcomb.pkl",
+    )
     parser.add_argument("--output-dir", type=str, default="outputs")
     parser.add_argument("--epochs", type=int, default=int(macro_values["epochs"]))
     parser.add_argument("--batch-size", type=int, default=int(macro_values["batch_size"]))
@@ -277,6 +281,9 @@ def train_once(
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "split_strategy": args.split_strategy,
+            "train_fraction": args.train_fraction,
+            "val_fraction": args.val_fraction,
+            "max_samples": args.max_samples,
             "use_gene_expression": args.use_gene_expression,
             "gene_feature_set": args.gene_feature_set if args.use_gene_expression else None,
             "cell_feature_view": resolve_cell_feature_view(args) if args.use_gene_expression else None,
