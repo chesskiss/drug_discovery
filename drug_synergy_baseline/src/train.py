@@ -13,10 +13,10 @@ from torch.utils.data import DataLoader
 
 from .dataset import (
     build_dataset_bundle_from_rows,
+    build_cv_dataset_bundle,
     build_datasets,
+    build_row_cv_folds,
     load_aligned_synergy_and_expression,
-    split_drug_and_cell_line_priority_rows,
-    split_unique_values_into_folds,
 )
 from .macros import DEFAULT_MACRO_FILE, DEFAULT_MACRO_PRESET, load_macro_preset
 from .model import build_baseline_model
@@ -179,6 +179,7 @@ def train_once(
     output_dir: Path | None = None,
     save_artifacts: bool = False,
     run_label: str = "single_run",
+    extra_config: dict[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     torch.manual_seed(run_seed)
 
@@ -290,6 +291,8 @@ def train_once(
             "cell_encoder_type": "identity",
             "cell_latent_dim": datasets.gene_dim,
         }
+        if extra_config:
+            config_payload.update(extra_config)
 
         save_json(config_path, config_payload)
         save_json(metrics_path, metrics)
@@ -335,38 +338,6 @@ def train_once(
     return metrics, eval_outputs
 
 
-def build_cv_folds(frame: pd.DataFrame, num_folds: int, seed: int, stratified: bool) -> list[np.ndarray]:
-    if num_folds < 2:
-        raise ValueError("Cross-validation requires at least 2 folds.")
-
-    n_rows = len(frame)
-    if n_rows < num_folds:
-        raise ValueError(f"Cannot build {num_folds} folds from only {n_rows} rows.")
-
-    rng = np.random.default_rng(seed)
-    fold_buckets: list[list[int]] = [[] for _ in range(num_folds)]
-
-    if not stratified:
-        indices = np.arange(n_rows)
-        rng.shuffle(indices)
-        for fold_idx, idx in enumerate(indices):
-            fold_buckets[fold_idx % num_folds].append(int(idx))
-        return [np.asarray(bucket, dtype=int) for bucket in fold_buckets]
-
-    target = frame["target"]
-    num_bins = min(num_folds, max(2, min(10, target.nunique())))
-    bins = pd.qcut(target, q=num_bins, labels=False, duplicates="drop")
-    strat_df = pd.DataFrame({"row_idx": np.arange(n_rows), "bin": bins})
-
-    for _, group in strat_df.groupby("bin", dropna=False):
-        indices = group["row_idx"].to_numpy(dtype=int)
-        rng.shuffle(indices)
-        for fold_idx, idx in enumerate(indices):
-            fold_buckets[fold_idx % num_folds].append(int(idx))
-
-    return [np.asarray(sorted(bucket), dtype=int) for bucket in fold_buckets]
-
-
 def run_cross_validation(args: argparse.Namespace) -> None:
     if args.split_strategy not in {"random", "drug_and_cell_line"}:
         raise ValueError("Cross-validation is currently supported only with --split-strategy random or drug_and_cell_line.")
@@ -397,76 +368,43 @@ def run_cross_validation(args: argparse.Namespace) -> None:
 
     for seed in cv_seeds:
         if args.split_strategy == "random":
-            folds = build_cv_folds(synergy_df, num_folds=args.cv_folds, seed=seed, stratified=args.stratified_cv)
+            folds = build_row_cv_folds(synergy_df, num_folds=args.cv_folds, seed=seed, stratified=args.stratified_cv)
             fold_indices = range(len(folds))
         else:
-            all_drugs = sorted(set(synergy_df["smiles_a"].astype(str)) | set(synergy_df["smiles_b"].astype(str)))
-            drug_folds = split_unique_values_into_folds(
-                all_drugs,
-                num_folds=args.cv_folds,
-                random_seed=seed,
-            )
-            cell_folds = split_unique_values_into_folds(
-                synergy_df["cell_line"].astype(str).tolist(),
-                num_folds=args.cv_folds,
-                random_seed=seed,
-            )
             fold_indices = range(args.cv_folds)
 
         for fold_idx in fold_indices:
-            if args.split_strategy == "random":
-                test_indices = folds[fold_idx]
-                mask = np.ones(len(synergy_df), dtype=bool)
-                mask[test_indices] = False
-                remaining = synergy_df.loc[mask].reset_index(drop=True)
-                test_rows = synergy_df.iloc[test_indices].reset_index(drop=True)
-
-                shuffled_indices = np.arange(len(remaining))
-                fold_rng = np.random.default_rng(seed * 1000 + fold_idx)
-                fold_rng.shuffle(shuffled_indices)
-
-                val_count = max(1, int(len(shuffled_indices) * val_fraction_within_train))
-                if val_count >= len(shuffled_indices):
-                    val_count = max(1, len(shuffled_indices) - 1)
-
-                val_rows = remaining.iloc[shuffled_indices[:val_count]].reset_index(drop=True)
-                train_rows = remaining.iloc[shuffled_indices[val_count:]].reset_index(drop=True)
-            else:
-                val_fold_idx = (fold_idx + 1) % args.cv_folds
-                train_rows, val_rows, test_rows = split_drug_and_cell_line_priority_rows(
-                    synergy_df,
-                    val_drugs=drug_folds[val_fold_idx],
-                    test_drugs=drug_folds[fold_idx],
-                    val_cells=cell_folds[val_fold_idx],
-                    test_cells=cell_folds[fold_idx],
-                )
-                if train_rows.empty or val_rows.empty or test_rows.empty:
-                    raise ValueError(
-                        "drug_and_cell_line CV produced an empty split "
-                        f"for seed={seed}, fold={fold_idx + 1} "
-                        f"(train={len(train_rows)}, val={len(val_rows)}, test={len(test_rows)})."
-                    )
-                train_rows = train_rows.reset_index(drop=True)
-                val_rows = val_rows.reset_index(drop=True)
-                test_rows = test_rows.reset_index(drop=True)
-
-            datasets = build_dataset_bundle_from_rows(
-                train_rows=train_rows,
-                val_rows=val_rows,
-                test_rows=test_rows,
-                expression_lookup=expression_lookup,
-                smiles_dim=args.smiles_dim,
+            datasets = build_cv_dataset_bundle(
+                synergy_df,
+                expression_lookup,
                 gene_dim=gene_dim,
+                smiles_dim=args.smiles_dim,
+                split_strategy=args.split_strategy,
+                num_folds=args.cv_folds,
+                seed=seed,
+                fold_idx=fold_idx,
+                train_fraction=args.train_fraction,
+                val_fraction=args.val_fraction,
+                stratified=args.stratified_cv,
             )
             run_label = f"cv_seed_{seed}_fold_{fold_idx + 1}"
             fold_output_dir = output_dir / "fold_runs" / run_label
+            fold_extra_config = {
+                "evaluation_mode": "cross_validation",
+                "cv_seed": seed,
+                "cv_fold": fold_idx + 1,
+                "cv_folds": args.cv_folds,
+                "cv_group_strategy": "row_folds" if args.split_strategy == "random" else "drug_and_cell_line_priority",
+                "stratified_cv": args.stratified_cv if args.split_strategy == "random" else False,
+            }
             metrics, eval_outputs = train_once(
                 datasets,
                 args,
                 run_seed=seed,
                 output_dir=fold_output_dir,
-                save_artifacts=False,
+                save_artifacts=True,
                 run_label=run_label,
+                extra_config=fold_extra_config,
             )
             metrics["cv_seed"] = seed
             metrics["cv_fold"] = fold_idx + 1

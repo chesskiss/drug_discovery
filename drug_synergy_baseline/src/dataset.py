@@ -353,6 +353,124 @@ def build_dataset_bundle_from_rows(
     )
 
 
+def build_row_cv_folds(
+    frame: pd.DataFrame,
+    *,
+    num_folds: int,
+    seed: int,
+    stratified: bool,
+) -> list[np.ndarray]:
+    if num_folds < 2:
+        raise ValueError("Cross-validation requires at least 2 folds.")
+
+    n_rows = len(frame)
+    if n_rows < num_folds:
+        raise ValueError(f"Cannot build {num_folds} folds from only {n_rows} rows.")
+
+    rng = np.random.default_rng(seed)
+    fold_buckets: list[list[int]] = [[] for _ in range(num_folds)]
+
+    if not stratified:
+        indices = np.arange(n_rows)
+        rng.shuffle(indices)
+        for fold_idx, idx in enumerate(indices):
+            fold_buckets[fold_idx % num_folds].append(int(idx))
+        return [np.asarray(bucket, dtype=int) for bucket in fold_buckets]
+
+    target = frame["target"]
+    num_bins = min(num_folds, max(2, min(10, target.nunique())))
+    bins = pd.qcut(target, q=num_bins, labels=False, duplicates="drop")
+    strat_df = pd.DataFrame({"row_idx": np.arange(n_rows), "bin": bins})
+
+    for _, group in strat_df.groupby("bin", dropna=False):
+        indices = group["row_idx"].to_numpy(dtype=int)
+        rng.shuffle(indices)
+        for fold_idx, idx in enumerate(indices):
+            fold_buckets[fold_idx % num_folds].append(int(idx))
+
+    return [np.asarray(sorted(bucket), dtype=int) for bucket in fold_buckets]
+
+
+def build_cv_dataset_bundle(
+    synergy_df: pd.DataFrame,
+    expression_lookup: dict[str, np.ndarray],
+    *,
+    gene_dim: int,
+    smiles_dim: int,
+    split_strategy: str,
+    num_folds: int,
+    seed: int,
+    fold_idx: int,
+    train_fraction: float,
+    val_fraction: float,
+    stratified: bool = False,
+) -> DatasetBundle:
+    observed_fraction = train_fraction + val_fraction
+    if observed_fraction <= 0 or observed_fraction >= 1:
+        val_fraction_within_train = 0.1
+    else:
+        val_fraction_within_train = val_fraction / observed_fraction
+
+    if split_strategy == "random":
+        folds = build_row_cv_folds(synergy_df, num_folds=num_folds, seed=seed, stratified=stratified)
+        test_indices = folds[fold_idx]
+        mask = np.ones(len(synergy_df), dtype=bool)
+        mask[test_indices] = False
+        remaining = synergy_df.loc[mask].reset_index(drop=True)
+        test_rows = synergy_df.iloc[test_indices].reset_index(drop=True)
+
+        shuffled_indices = np.arange(len(remaining))
+        fold_rng = np.random.default_rng(seed * 1000 + fold_idx)
+        fold_rng.shuffle(shuffled_indices)
+
+        val_count = max(1, int(len(shuffled_indices) * val_fraction_within_train))
+        if val_count >= len(shuffled_indices):
+            val_count = max(1, len(shuffled_indices) - 1)
+
+        val_rows = remaining.iloc[shuffled_indices[:val_count]].reset_index(drop=True)
+        train_rows = remaining.iloc[shuffled_indices[val_count:]].reset_index(drop=True)
+    elif split_strategy == "drug_and_cell_line":
+        all_drugs = sorted(set(synergy_df["smiles_a"].astype(str)) | set(synergy_df["smiles_b"].astype(str)))
+        drug_folds = split_unique_values_into_folds(
+            all_drugs,
+            num_folds=num_folds,
+            random_seed=seed,
+        )
+        cell_folds = split_unique_values_into_folds(
+            synergy_df["cell_line"].astype(str).tolist(),
+            num_folds=num_folds,
+            random_seed=seed,
+        )
+        val_fold_idx = (fold_idx + 1) % num_folds
+        train_rows, val_rows, test_rows = split_drug_and_cell_line_priority_rows(
+            synergy_df,
+            val_drugs=drug_folds[val_fold_idx],
+            test_drugs=drug_folds[fold_idx],
+            val_cells=cell_folds[val_fold_idx],
+            test_cells=cell_folds[fold_idx],
+        )
+        if train_rows.empty or val_rows.empty or test_rows.empty:
+            raise ValueError(
+                "drug_and_cell_line CV produced an empty split "
+                f"for seed={seed}, fold={fold_idx + 1} "
+                f"(train={len(train_rows)}, val={len(val_rows)}, test={len(test_rows)})."
+            )
+        train_rows = train_rows.reset_index(drop=True)
+        val_rows = val_rows.reset_index(drop=True)
+        test_rows = test_rows.reset_index(drop=True)
+    else:
+        raise ValueError(f"Unsupported CV split strategy: {split_strategy}")
+
+    return build_dataset_bundle_from_rows(
+        train_rows=train_rows,
+        val_rows=val_rows,
+        test_rows=test_rows,
+        expression_lookup=expression_lookup,
+        smiles_dim=smiles_dim,
+        gene_dim=gene_dim,
+    )
+
+
 def build_datasets(
     synergy_path: str,
     cell_expression_path: str | None,

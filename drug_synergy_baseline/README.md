@@ -80,15 +80,30 @@ uv run python -m src.oca \
   --config-path outputs/pca128_random/config.json
 ```
 
-This first pass is single-run only. CV runs are out of scope because fold checkpoints are not saved.
-
 Artifacts are written under `outputs/<run>/oca/`:
 
 - `component_importance.csv`
 - `local_explanations.csv`
 - `component_importance_topk.png`
+- `component_importance_head_tail_summary.png`
 - `local_explanations_heatmap.png`
 - `oca_summary.json`
+
+Run fold-wise OCA for a CV directory:
+
+```bash
+uv run python -m src.oca_cv \
+  --cv-output-dir outputs/long_cv10_10k_pca128_drug_and_cell_line_practical
+```
+
+This expects each fold run to contain `baseline_mlp.pt`. Older CV outputs created before this checkpoint-saving patch must be rerun first.
+
+CV OCA aggregate artifacts are written under `outputs/<cv_run>/oca_cv/`:
+
+- `oca_cv_component_importance_per_fold.csv`
+- `oca_cv_component_summary.csv`
+- `oca_cv_topk_stability.png`
+- `oca_cv_summary.json`
 
 ## Run pipeline
 

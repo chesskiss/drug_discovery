@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 
-from .dataset import build_datasets, smiles_to_vector
+from .dataset import build_cv_dataset_bundle, build_datasets, load_aligned_synergy_and_expression, smiles_to_vector
 from .oca_plots import plot_component_importance_head_tail_summary, plot_component_importance_topk
 from .predict import GENE_FEATURE_SET_TO_VIEW, get_device, load_config, load_model
 from .training_artifacts import save_json
@@ -92,47 +93,92 @@ def _resolve_path_value(override: str | None, config: dict[str, object], key: st
     return str(value)
 
 
-def _build_test_bundle(args: argparse.Namespace, config: dict[str, object]):
-    synergy_path = _resolve_path_value(args.synergy_path, config, "synergy_path")
+def resolve_cell_feature_view(
+    *,
+    config: dict[str, object],
+    gene_feature_set: str | None = None,
+    cell_feature_view: int | None = None,
+) -> int:
+    if gene_feature_set is not None:
+        return GENE_FEATURE_SET_TO_VIEW[gene_feature_set]
+    if cell_feature_view is not None:
+        return int(cell_feature_view)
+    if config.get("cell_feature_view") is not None:
+        return int(config["cell_feature_view"])
+    if config.get("gene_feature_set") in GENE_FEATURE_SET_TO_VIEW:
+        return GENE_FEATURE_SET_TO_VIEW[str(config["gene_feature_set"])]
+    return 0
+
+
+def build_test_bundle_from_config(
+    config: dict[str, object],
+    *,
+    synergy_path_override: str | None = None,
+    cell_expression_path_override: str | None = None,
+    fallback_pickle_path_override: str | None = None,
+    split_strategy_override: str | None = None,
+    gene_feature_set_override: str | None = None,
+    cell_feature_view_override: int | None = None,
+    max_samples_override: int | None = None,
+) -> tuple[Any, dict[str, object]]:
+    synergy_path = _resolve_path_value(synergy_path_override, config, "synergy_path")
     if synergy_path is None:
         raise ValueError("No synergy path available. Pass --synergy-path or use a config with synergy_path.")
 
     use_gene_expression = bool(config.get("use_gene_expression", True))
-    cell_expression_path = _resolve_path_value(args.cell_expression_path, config, "cell_expression_path")
-    fallback_pickle_path = _resolve_path_value(args.fallback_pickle_path, config, "fallback_pickle_path")
-    split_strategy = args.split_strategy or str(config.get("split_strategy", "random"))
+    cell_expression_path = _resolve_path_value(cell_expression_path_override, config, "cell_expression_path")
+    fallback_pickle_path = _resolve_path_value(fallback_pickle_path_override, config, "fallback_pickle_path")
+    split_strategy = split_strategy_override or str(config.get("split_strategy", "random"))
     train_fraction = float(config.get("train_fraction", 0.8))
     val_fraction = float(config.get("val_fraction", 0.1))
     random_seed = int(config.get("seed", 42))
     smiles_dim = int(config.get("drug_dim", 256))
-    max_samples = args.max_samples if args.max_samples is not None else config.get("max_samples")
+    max_samples = max_samples_override if max_samples_override is not None else config.get("max_samples")
     hidden_dims = config.get("hidden_dims")
     dropout = float(config.get("dropout", 0.2))
 
-    if args.gene_feature_set is not None:
-        cell_feature_view = GENE_FEATURE_SET_TO_VIEW[args.gene_feature_set]
-    elif args.cell_feature_view is not None:
-        cell_feature_view = int(args.cell_feature_view)
-    elif config.get("cell_feature_view") is not None:
-        cell_feature_view = int(config["cell_feature_view"])
-    elif config.get("gene_feature_set") in GENE_FEATURE_SET_TO_VIEW:
-        cell_feature_view = GENE_FEATURE_SET_TO_VIEW[str(config["gene_feature_set"])]
-    else:
-        cell_feature_view = 0
-
-    datasets = build_datasets(
+    cell_feature_view = resolve_cell_feature_view(
+        config=config,
+        gene_feature_set=gene_feature_set_override,
+        cell_feature_view=cell_feature_view_override,
+    )
+    synergy_df, expression_lookup, gene_dim = load_aligned_synergy_and_expression(
         synergy_path=synergy_path,
         cell_expression_path=cell_expression_path,
         fallback_pickle_path=fallback_pickle_path,
-        use_gene_expression=use_gene_expression,
         cell_feature_view=cell_feature_view,
-        split_strategy=split_strategy,
-        smiles_dim=smiles_dim,
-        train_fraction=train_fraction,
-        val_fraction=val_fraction,
-        random_seed=random_seed,
+        use_gene_expression=use_gene_expression,
         max_samples=int(max_samples) if max_samples is not None else None,
     )
+
+    if config.get("evaluation_mode") == "cross_validation":
+        datasets = build_cv_dataset_bundle(
+            synergy_df,
+            expression_lookup,
+            gene_dim=gene_dim,
+            smiles_dim=smiles_dim,
+            split_strategy=split_strategy,
+            num_folds=int(config["cv_folds"]),
+            seed=int(config["cv_seed"]),
+            fold_idx=int(config["cv_fold"]) - 1,
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+            stratified=bool(config.get("stratified_cv", False)),
+        )
+    else:
+        datasets = build_datasets(
+            synergy_path=synergy_path,
+            cell_expression_path=cell_expression_path,
+            fallback_pickle_path=fallback_pickle_path,
+            use_gene_expression=use_gene_expression,
+            cell_feature_view=cell_feature_view,
+            split_strategy=split_strategy,
+            smiles_dim=smiles_dim,
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+            random_seed=random_seed,
+            max_samples=int(max_samples) if max_samples is not None else None,
+        )
     return datasets, {
         "synergy_path": synergy_path,
         "cell_expression_path": cell_expression_path,
@@ -148,6 +194,19 @@ def _build_test_bundle(args: argparse.Namespace, config: dict[str, object]):
         "cell_feature_view": cell_feature_view,
         "use_gene_expression": use_gene_expression,
     }
+
+
+def _build_test_bundle(args: argparse.Namespace, config: dict[str, object]):
+    return build_test_bundle_from_config(
+        config,
+        synergy_path_override=args.synergy_path,
+        cell_expression_path_override=args.cell_expression_path,
+        fallback_pickle_path_override=args.fallback_pickle_path,
+        split_strategy_override=args.split_strategy,
+        gene_feature_set_override=args.gene_feature_set,
+        cell_feature_view_override=args.cell_feature_view,
+        max_samples_override=args.max_samples,
+    )
 
 
 def _build_test_arrays(test_rows: pd.DataFrame, expression_lookup: dict[str, np.ndarray], smiles_dim: int):
@@ -240,21 +299,27 @@ def _plot_local_heatmap(
     plt.close(fig)
 
 
-def main() -> None:
-    args = parse_args()
-    config = load_config(Path(args.config_path))
-    datasets, resolved = _build_test_bundle(args, config)
-
+def run_oca_analysis(
+    *,
+    model: torch.nn.Module,
+    model_path: Path,
+    config_path: Path,
+    config: dict[str, object],
+    datasets,
+    resolved: dict[str, object],
+    output_dir: Path,
+    batch_size: int,
+    device: torch.device,
+    top_k: int,
+    local_top_n: int,
+    local_row_idx: list[int] | None,
+    mask_value: float,
+    progress_prefix: str = "oca",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not resolved["use_gene_expression"] or datasets.gene_dim <= 0:
-        raise ValueError("OCA v1 requires a gene-enabled checkpoint with a positive gene dimension.")
+        raise ValueError("OCA requires a gene-enabled checkpoint with a positive gene dimension.")
 
-    model_path = Path(args.model_path)
-    output_dir = Path(args.output_dir) if args.output_dir else model_path.parent / "oca"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    device = get_device(args.device)
-    batch_size = int(args.batch_size or config.get("batch_size", 256))
-    model = load_model(config, model_path, device)
 
     test_rows = datasets.test_rows.copy().reset_index(drop=True)
     expression_lookup = datasets.test.expression_lookup
@@ -269,14 +334,18 @@ def main() -> None:
     )
     base_squared_error = np.square(base_predictions - targets)
     base_absolute_error = np.abs(base_predictions - targets)
-    local_indices = _select_local_row_indices(test_rows, base_predictions, args.local_top_n, args.local_row_idx)
+    local_indices = _select_local_row_indices(test_rows, base_predictions, local_top_n, local_row_idx)
 
     component_records: list[dict[str, float | int]] = []
     local_records: list[dict[str, object]] = []
+    progress_step = max(1, datasets.gene_dim // 10)
 
     for component_idx in range(datasets.gene_dim):
+        if component_idx % progress_step == 0 or component_idx == datasets.gene_dim - 1:
+            print(f"[{progress_prefix}] component {component_idx + 1}/{datasets.gene_dim}")
+
         masked_gene_expr = gene_expr.copy()
-        masked_gene_expr[:, component_idx] = np.float32(args.mask_value)
+        masked_gene_expr[:, component_idx] = np.float32(mask_value)
         masked_predictions = _predict_arrays(
             model,
             drug_a=drug_a,
@@ -343,31 +412,62 @@ def main() -> None:
 
     component_importance_df.to_csv(component_path, index=False)
     local_explanations_df.to_csv(local_path, index=False)
-    plot_component_importance_topk(component_importance_df, global_plot_path, args.top_k)
+    plot_component_importance_topk(component_importance_df, global_plot_path, top_k)
     plot_component_importance_head_tail_summary(component_importance_df, summary_plot_path)
-    _plot_local_heatmap(local_explanations_df, component_importance_df, heatmap_path, args.top_k)
+    _plot_local_heatmap(local_explanations_df, component_importance_df, heatmap_path, top_k)
     save_json(
         summary_path,
         {
             "model_path": str(model_path),
-            "config_path": str(args.config_path),
+            "config_path": str(config_path),
             "output_dir": str(output_dir),
             "gene_dim": int(datasets.gene_dim),
             "drug_dim": int(datasets.drug_dim),
             "test_rows": int(len(test_rows)),
-            "mask_value": float(args.mask_value),
-            "top_k": int(args.top_k),
+            "mask_value": float(mask_value),
+            "top_k": int(top_k),
             "local_row_indices": local_indices,
             "resolved": resolved,
+            "evaluation_mode": config.get("evaluation_mode", "single_split"),
         },
     )
 
-    print(f"[oca] Saved component importance to {component_path}")
-    print(f"[oca] Saved local explanations to {local_path}")
-    print(f"[oca] Saved global importance plot to {global_plot_path}")
-    print(f"[oca] Saved head/tail summary plot to {summary_plot_path}")
-    print(f"[oca] Saved local heatmap to {heatmap_path}")
-    print(f"[oca] Saved summary to {summary_path}")
+    print(f"[{progress_prefix}] Saved component importance to {component_path}")
+    print(f"[{progress_prefix}] Saved local explanations to {local_path}")
+    print(f"[{progress_prefix}] Saved global importance plot to {global_plot_path}")
+    print(f"[{progress_prefix}] Saved head/tail summary plot to {summary_plot_path}")
+    print(f"[{progress_prefix}] Saved local heatmap to {heatmap_path}")
+    print(f"[{progress_prefix}] Saved summary to {summary_path}")
+    return component_importance_df, local_explanations_df
+
+
+def main() -> None:
+    args = parse_args()
+    config = load_config(Path(args.config_path))
+    datasets, resolved = _build_test_bundle(args, config)
+
+    model_path = Path(args.model_path)
+    output_dir = Path(args.output_dir) if args.output_dir else model_path.parent / "oca"
+
+    device = get_device(args.device)
+    batch_size = int(args.batch_size or config.get("batch_size", 256))
+    model = load_model(config, model_path, device)
+    run_oca_analysis(
+        model=model,
+        model_path=model_path,
+        config_path=Path(args.config_path),
+        config=config,
+        datasets=datasets,
+        resolved=resolved,
+        output_dir=output_dir,
+        batch_size=batch_size,
+        device=device,
+        top_k=args.top_k,
+        local_top_n=args.local_top_n,
+        local_row_idx=args.local_row_idx,
+        mask_value=args.mask_value,
+        progress_prefix="oca",
+    )
 
 
 if __name__ == "__main__":
