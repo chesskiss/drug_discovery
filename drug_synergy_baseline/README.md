@@ -89,6 +89,15 @@ Artifacts are written under `outputs/<run>/oca/`:
 - `local_explanations_heatmap.png`
 - `oca_summary.json`
 
+Meaning:
+
+- `component_importance.csv`: component ranking for that run
+- `local_explanations.csv`: per-sample occlusion deltas for selected rows
+- `component_importance_topk.png`: top helpful components
+- `component_importance_head_tail_summary.png`: helpful head plus harmful tail
+- `local_explanations_heatmap.png`: selected rows versus important components
+- `oca_summary.json`: OCA run metadata
+
 Run fold-wise OCA for a CV directory:
 
 ```bash
@@ -98,12 +107,44 @@ uv run python -m src.oca_cv \
 
 This expects each fold run to contain `baseline_mlp.pt`. Older CV outputs created before this checkpoint-saving patch must be rerun first.
 
+Each fold directory also contains:
+
+- `baseline_mlp.pt`: trained fold model weights
+- `config.json`: exact fold settings
+- `metrics.json`: fold-level evaluation metrics
+- `history.csv`: train/val loss per epoch
+- `test_predictions.csv`: fold test predictions
+- `val_predictions.csv`: fold validation predictions
+- `oca/component_importance.csv`: component ranking for that fold
+- `oca/local_explanations.csv`: per-sample occlusion deltas for selected rows
+- `oca/component_importance_topk.png`: top helpful components for that fold
+- `oca/component_importance_head_tail_summary.png`: helpful head plus harmful tail for that fold
+- `oca/local_explanations_heatmap.png`: selected rows versus important components for that fold
+- `oca/oca_summary.json`: fold OCA metadata
+
 CV OCA aggregate artifacts are written under `outputs/<cv_run>/oca_cv/`:
 
 - `oca_cv_component_importance_per_fold.csv`
 - `oca_cv_component_summary.csv`
 - `oca_cv_topk_stability.png`
+- `oca_cv_fold_component_heatmap.png`
+- `oca_cv_topk_frequency.png`
 - `oca_cv_summary.json`
+
+Meaning:
+
+- `oca_cv_component_importance_per_fold.csv`: all fold OCA results stacked together
+- `oca_cv_component_summary.csv`: mean and spread of component importance across folds
+- `oca_cv_topk_stability.png`: helpful head, compressed zero block, and harmful tail with mean dots and min/max intervals
+- `oca_cv_fold_component_heatmap.png`: fold-by-component heatmap for the top aggregate components
+- `oca_cv_topk_frequency.png`: how often each component appears in the fold top-k
+- `oca_cv_summary.json`: aggregate OCA metadata
+
+Current `oca_cv_topk_stability.png` semantics:
+
+- dot: mean `mean_delta_squared_error` across folds
+- vertical black interval: min to max fold value for that component
+- zero-valued components are compressed into one block
 
 ## Run pipeline
 

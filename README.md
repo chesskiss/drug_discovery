@@ -20,6 +20,7 @@ This repo studies drug synergy prediction, with the current focus on improving t
 - Compression pipeline for `z-score -> variance top-k -> PCA128` exists under [data_compression/zscore_var_pca_128](/Users/arnoldcheskis/Documents/Projects/drug_discovery/data_compression/zscore_var_pca_128).
 - Cell-line-only descriptive and predictive diagnostics are implemented in [cell_line_difficulty](/Users/arnoldcheskis/Documents/Projects/drug_discovery/cell_line_difficulty).
 - OCA / attribution scripts exist in the baseline package for saved runs and CV folds.
+- 10-fold CV OCA for the combined PCA128 baseline is under [drug_synergy_baseline/outputs/long_cv10_10k_pca128_drug_and_cell_line_practical/oca_cv](/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/outputs/long_cv10_10k_pca128_drug_and_cell_line_practical/oca_cv). It aggregates fold-wise component importance and stability; per-fold OCA artifacts live under each `fold_runs/.../oca/` directory.
 
 ## Baseline Output Name Meanings
 

@@ -24,20 +24,123 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _plot_cv_aggregate(aggregate_df: pd.DataFrame, output_path: Path, top_k: int) -> None:
-    top_df = aggregate_df.sort_values(["mean_delta_squared_error_mean", "top_k_count"], ascending=[False, False]).head(top_k)
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.bar(
-        [f"C{int(idx)}" for idx in top_df["component_idx"]],
-        top_df["mean_delta_squared_error_mean"],
-        yerr=top_df["mean_delta_squared_error_std"],
-        capsize=4,
-        color="#2c7fb8",
+def _build_head_zero_tail_summary(aggregate_df: pd.DataFrame, *, head_k: int, tail_k: int) -> pd.DataFrame:
+    ranked = aggregate_df.sort_values(["aggregate_rank", "component_idx"]).reset_index(drop=True)
+    zero_mask = (
+        ranked["mean_abs_delta_prediction_mean"].abs() <= 1e-12
+    ) & (
+        ranked["mean_delta_squared_error_mean"].abs() <= 1e-12
+    ) & (
+        ranked["mean_delta_absolute_error_mean"].abs() <= 1e-12
+    ) & (
+        ranked["mean_delta_squared_error_min"].abs() <= 1e-12
+    ) & (
+        ranked["mean_delta_squared_error_max"].abs() <= 1e-12
     )
-    ax.set_title("CV OCA Aggregate: Mean Delta Squared Error Across Folds")
+
+    head_df = ranked.head(head_k).copy()
+    tail_df = ranked.tail(tail_k).copy()
+    zero_count = int(zero_mask.sum())
+
+    rows: list[dict[str, object]] = []
+    for row in head_df.itertuples(index=False):
+        rows.append(
+            {
+                "label": f"C{int(row.component_idx)}",
+                "component_idx": int(row.component_idx),
+                "mean": float(row.mean_delta_squared_error_mean),
+                "min": float(row.mean_delta_squared_error_min),
+                "max": float(row.mean_delta_squared_error_max),
+                "kind": "head",
+            }
+        )
+
+    if zero_count > 0:
+        rows.append(
+            {
+                "label": f"Zero block\n({zero_count} comps)",
+                "component_idx": None,
+                "mean": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "kind": "zero",
+            }
+        )
+
+    for row in tail_df.itertuples(index=False):
+        rows.append(
+            {
+                "label": f"C{int(row.component_idx)}",
+                "component_idx": int(row.component_idx),
+                "mean": float(row.mean_delta_squared_error_mean),
+                "min": float(row.mean_delta_squared_error_min),
+                "max": float(row.mean_delta_squared_error_max),
+                "kind": "tail",
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _plot_cv_aggregate_head_tail(aggregate_df: pd.DataFrame, output_path: Path, top_k: int) -> None:
+    summary_df = _build_head_zero_tail_summary(aggregate_df, head_k=top_k, tail_k=5)
+    fig, ax = plt.subplots(figsize=(15, 6))
+    x_positions = list(range(len(summary_df)))
+
+    for idx, row in enumerate(summary_df.itertuples(index=False)):
+        color = "#2c7fb8" if row.kind == "head" else "#d95f02" if row.kind == "tail" else "#9e9e9e"
+        ax.vlines(idx, row.min, row.max, color="black", linewidth=2.2, alpha=0.9)
+        ax.scatter(idx, row.mean, color=color, s=90, zorder=3)
+
+    ax.axhline(0.0, color="black", linewidth=1.0, alpha=0.6)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(summary_df["label"].tolist(), rotation=35, ha="right")
+    ax.set_title("CV OCA Aggregate: Helpful Head, Zero Block, Harmful Tail")
     ax.set_xlabel("PCA Component")
     ax.set_ylabel("Mean Delta Squared Error")
     ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def _plot_cv_topk_frequency(aggregate_df: pd.DataFrame, output_path: Path, top_k: int) -> None:
+    top_df = aggregate_df.sort_values(["top_k_count", "mean_delta_squared_error_mean"], ascending=[False, False]).head(top_k)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar([f"C{int(idx)}" for idx in top_df["component_idx"]], top_df["top_k_count"], color="#2c7fb8")
+    ax.set_title("CV OCA: Top-k Frequency Across Folds")
+    ax.set_xlabel("PCA Component")
+    ax.set_ylabel("Number of Folds in Top-k")
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def _plot_cv_fold_component_heatmap(combined_df: pd.DataFrame, aggregate_df: pd.DataFrame, output_path: Path, top_k: int) -> None:
+    top_components = (
+        aggregate_df.sort_values(["mean_delta_squared_error_mean", "top_k_count"], ascending=[False, False])
+        .head(top_k)["component_idx"]
+        .tolist()
+    )
+    heatmap_df = combined_df[combined_df["component_idx"].isin(top_components)].copy()
+    pivot = heatmap_df.pivot_table(
+        index="cv_fold",
+        columns="component_idx",
+        values="mean_delta_squared_error",
+        aggfunc="mean",
+    ).reindex(columns=top_components)
+
+    fig, ax = plt.subplots(figsize=(max(9, len(top_components) * 0.9), max(5, len(pivot) * 0.6)))
+    image = ax.imshow(pivot.to_numpy(dtype=float), aspect="auto", cmap="coolwarm")
+    ax.set_title("CV OCA Fold-by-Component Heatmap")
+    ax.set_xlabel("PCA Component")
+    ax.set_ylabel("CV Fold")
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([f"C{int(col)}" for col in pivot.columns], rotation=45, ha="right")
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels([f"Fold {int(idx)}" for idx in pivot.index])
+    fig.colorbar(image, ax=ax, label="Mean Delta Squared Error")
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
@@ -109,10 +212,16 @@ def main() -> None:
         .agg(
             mean_abs_delta_prediction_mean=("mean_abs_delta_prediction", "mean"),
             mean_abs_delta_prediction_std=("mean_abs_delta_prediction", "std"),
+            mean_abs_delta_prediction_min=("mean_abs_delta_prediction", "min"),
+            mean_abs_delta_prediction_max=("mean_abs_delta_prediction", "max"),
             mean_delta_squared_error_mean=("mean_delta_squared_error", "mean"),
             mean_delta_squared_error_std=("mean_delta_squared_error", "std"),
+            mean_delta_squared_error_min=("mean_delta_squared_error", "min"),
+            mean_delta_squared_error_max=("mean_delta_squared_error", "max"),
             mean_delta_absolute_error_mean=("mean_delta_absolute_error", "mean"),
             mean_delta_absolute_error_std=("mean_delta_absolute_error", "std"),
+            mean_delta_absolute_error_min=("mean_delta_absolute_error", "min"),
+            mean_delta_absolute_error_max=("mean_delta_absolute_error", "max"),
             mean_rank=("rank", "mean"),
             rank_std=("rank", "std"),
             top_k_count=("is_top_k", "sum"),
@@ -131,11 +240,15 @@ def main() -> None:
     combined_path = oca_root / "oca_cv_component_importance_per_fold.csv"
     aggregate_path = oca_root / "oca_cv_component_summary.csv"
     plot_path = oca_root / "oca_cv_topk_stability.png"
+    heatmap_path = oca_root / "oca_cv_fold_component_heatmap.png"
+    frequency_path = oca_root / "oca_cv_topk_frequency.png"
     summary_path = oca_root / "oca_cv_summary.json"
 
     combined.to_csv(combined_path, index=False)
     aggregate_df.to_csv(aggregate_path, index=False)
-    _plot_cv_aggregate(aggregate_df, plot_path, args.top_k)
+    _plot_cv_aggregate_head_tail(aggregate_df, plot_path, args.top_k)
+    _plot_cv_fold_component_heatmap(combined, aggregate_df, heatmap_path, args.top_k)
+    _plot_cv_topk_frequency(aggregate_df, frequency_path, args.top_k)
     save_json(
         summary_path,
         {
@@ -144,6 +257,8 @@ def main() -> None:
             "top_k": int(args.top_k),
             "mask_value": float(args.mask_value),
             "aggregate_plot": str(plot_path),
+            "heatmap_plot": str(heatmap_path),
+            "topk_frequency_plot": str(frequency_path),
             "aggregate_csv": str(aggregate_path),
             "per_fold_csv": str(combined_path),
         },
@@ -152,6 +267,8 @@ def main() -> None:
     print(f"[oca_cv] Saved per-fold component scores to {combined_path}")
     print(f"[oca_cv] Saved aggregate component summary to {aggregate_path}")
     print(f"[oca_cv] Saved aggregate stability plot to {plot_path}")
+    print(f"[oca_cv] Saved fold/component heatmap to {heatmap_path}")
+    print(f"[oca_cv] Saved top-k frequency plot to {frequency_path}")
     print(f"[oca_cv] Saved summary to {summary_path}")
 
 
