@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 
 from .dataset import build_datasets, smiles_to_vector
+from .oca_plots import plot_component_importance_head_tail_summary, plot_component_importance_topk
 from .predict import GENE_FEATURE_SET_TO_VIEW, get_device, load_config, load_model
 from .training_artifacts import save_json
 
@@ -199,23 +200,6 @@ def _select_local_row_indices(
     return selected
 
 
-def _plot_component_importance(component_importance: pd.DataFrame, output_path: Path, top_k: int) -> None:
-    top_df = component_importance.nsmallest(top_k, "rank").sort_values("rank")
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar(
-        [f"C{idx}" for idx in top_df["component_idx"]],
-        top_df["mean_delta_squared_error"],
-        color="#2c7fb8",
-    )
-    ax.set_title("OCA Global Importance: Top Components")
-    ax.set_xlabel("PCA Component")
-    ax.set_ylabel("Mean Delta Squared Error")
-    ax.grid(axis="y", alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-
-
 def _plot_local_heatmap(
     local_df: pd.DataFrame,
     component_importance: pd.DataFrame,
@@ -353,12 +337,14 @@ def main() -> None:
     component_path = output_dir / "component_importance.csv"
     local_path = output_dir / "local_explanations.csv"
     global_plot_path = output_dir / "component_importance_topk.png"
+    summary_plot_path = output_dir / "component_importance_head_tail_summary.png"
     heatmap_path = output_dir / "local_explanations_heatmap.png"
     summary_path = output_dir / "oca_summary.json"
 
     component_importance_df.to_csv(component_path, index=False)
     local_explanations_df.to_csv(local_path, index=False)
-    _plot_component_importance(component_importance_df, global_plot_path, args.top_k)
+    plot_component_importance_topk(component_importance_df, global_plot_path, args.top_k)
+    plot_component_importance_head_tail_summary(component_importance_df, summary_plot_path)
     _plot_local_heatmap(local_explanations_df, component_importance_df, heatmap_path, args.top_k)
     save_json(
         summary_path,
@@ -379,6 +365,7 @@ def main() -> None:
     print(f"[oca] Saved component importance to {component_path}")
     print(f"[oca] Saved local explanations to {local_path}")
     print(f"[oca] Saved global importance plot to {global_plot_path}")
+    print(f"[oca] Saved head/tail summary plot to {summary_plot_path}")
     print(f"[oca] Saved local heatmap to {heatmap_path}")
     print(f"[oca] Saved summary to {summary_path}")
 
