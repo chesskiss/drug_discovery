@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>deep-research OpenAI model's comparison</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.5em;
+      margin-bottom: 0.5em;
+    }
+    code {
+      background: #f4f4f4;
+      padding: 0.2em 0.4em;
+      border-radius: 3px;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 1em;
+      border-radius: 5px;
+      overflow-x: auto;
+    }
+    blockquote {
+      border-left: 4px solid #ddd;
+      margin: 1em 0;
+      padding-left: 1em;
+      color: #666;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1em 0;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 0.5em;
+      text-align: left;
+    }
+    th {
+      background: #f4f4f4;
+    }
+    img {
+      max-width: 100%;
+      height: auto;
+    }
+    a {
+      color: #0066cc;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #ddd;
+      margin: 2em 0;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="Part-1---Comparison-of-approaches">Part 1 – Comparison of approaches</h1>
+<table>
+<thead>
+<tr>
+<th><strong>Approach</strong></th>
+<th><strong>Core architecture</strong></th>
+<th><strong>Datasets / resources needed</strong></th>
+<th><strong>Implementation phases (new baselines)</strong></th>
+<th><strong>Evaluation (splits/metrics)</strong></th>
+<th><strong>Rating / Pivot</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1. Program encoder + MLP</strong> (biological programs)</td>
+<td><em>Deterministic:</em> Compute pathway/regulon activity scores from z-scored gene expression. <em>MLP:</em> 2-layer supervised MLP → 128-d cell embedding.</td>
+<td>DoRothEA/TRRUST TF regulons (signed TF→targets)【11†L23-L32】; PROGENy pathway-responsive genes【8†L88-L91】; MSigDB/Hallmark/Reactome gene sets. (Optional: VIPER)</td>
+<td><strong>P1:</strong> PROGENy only. <strong>P2:</strong> DoRothEA only. <strong>P3:</strong> PRO+TF combined. <strong>P4:</strong> +Hallmark/Reactome. <strong>P5:</strong> +small gene residual (raw/PCA).</td>
+<td>Random split, leave-drug-out, leave-cell-out, leave-drug+cell-out (e.g. RMSE, Pearson).</td>
+<td><strong>Highest priority.</strong> Simple, interpretable, minimal risk. If it <strong>fails</strong>, programs may miss synergy signal; pivot to drug-conditioned or perturbation-based models. If it <strong>helps</strong>, refine via occlusion and possibly set-attention on programs.  (C.f. TranSynergy【4†L39-L47】 showed knowledge features can improve synergy.)</td>
+</tr>
+<tr>
+<td><strong>2. Graph modules encoder</strong></td>
+<td><em>Deterministic:</em> Map expression onto graph-derived gene modules. <em>MLP:</em> Small MLP on module activities → 128-d embedding.</td>
+<td>STRING PPI/OmniPath network; KEGG/Reactome pathways; other PPI databases.</td>
+<td><strong>P1:</strong> Use curated pathways (KEGG/Reactome) as modules, aggregate (mean/ssGSEA). <strong>P2:</strong> Cluster STRING graph (Louvain/Leiden) → modules; aggregate expression per cluster. <strong>P3:</strong> Graph-smoothing: propagate expression (e.g. (X' = \alpha X + (1-\alpha)AX)). <strong>P4:</strong> Drug-target propagation: random-walk from known targets to weight genes. <strong>P5:</strong> MLP on module vector.</td>
+<td>Same splits as above.</td>
+<td><strong>Second priority.</strong> Adds network context without heavy training. If it <strong>fails</strong>, a full GNN is unlikely to do better without more data; pivot to graph pretraining or simpler program model. If it <strong>improves</strong>, one might try a shallow GNN encoder. (TranSynergy used RWR on PPI【4†L39-L47】 to enrich drug profiles.)</td>
+</tr>
+<tr>
+<td><strong>3. High-capacity encoder (GNN/Transformer)</strong></td>
+<td><em>GNN variant:</em> Genes as nodes, expression as node features, edges from STRING/KEGG; use 1–2 GNN layers → pool → 128-d. <em>Transformer variant:</em> Set-attention over gene or program tokens (no positional enc.), with STRING/OmniPath attention bias.</td>
+<td>STRING/OmniPath graphs (edge scores); optionally directed signaling networks; pretraining corpora.</td>
+<td><strong>P1:</strong> Shallow GNN (1–2 layers) with global pooling. <strong>P2:</strong> Graph-biased transformer on genes or on program tokens. <strong>P3:</strong> Attention mask from graph adjacency or pathway membership. <strong>P4:</strong> (If data allows) Masked-token pretraining on external expression compendia.</td>
+<td>Same splits.</td>
+<td><strong>Low confidence.</strong> High risk of overfitting given ~59 cell lines (lack large pretrain). If it <strong>fails</strong>, revert to simpler encoders. If it <strong>works</strong>, consider deeper or multitask pretraining. (Note: GNNs like DeepDDS【30†L136-L144】 have boosted performance, but SynVerse warns on overfit【20†L112-L120】.)</td>
+</tr>
+<tr>
+<td><strong>4. Mixture-of-priors encoder</strong></td>
+<td>Run multiple encoders in parallel (e.g. regulon-MLP, pathway-MLP, graph-modules, PCA), then <strong>fuse</strong>: (\alpha_1 e_{\rm regulon} + \alpha_2 e_{\rm pathway} + \alpha_3 e_{\rm graph} + \alpha_4 e_{\rm PCA}) → 128-d.</td>
+<td>All of (1)+(2) plus raw PCA: DoRothEA, PROGENy, STRING graph, plus PCA on top-genes.</td>
+<td><strong>P1:</strong> Regulon-only branch. <strong>P2:</strong> +Pathway branch (concat). <strong>P3:</strong> +Graph-module branch. <strong>P4:</strong> +PCA residual branch. <strong>P5:</strong> Learn or set α weights (e.g. sparse/nonnegative).</td>
+<td>Same splits.</td>
+<td><strong>Robust fallback.</strong> Learns which prior helps. If α collapses to PCA, curated priors aren’t informative in this task. If it <strong>fails</strong>, biological priors may not carry synergy signal; pivot to conditional models. If it <strong>works</strong>, analyze which α &gt;&gt;0; try to refine winning branch.</td>
+</tr>
+<tr>
+<td><strong>5. Drug-conditioned encoder</strong></td>
+<td><em>Deterministic:</em> Map each drug→targets; compute gene relevance (e.g. network distance or signature effect). <em>Trainable:</em> Weight/gate expression by relevance, then encode (e.g. regulon or pathway MLP) → 128-d <strong>specific to (A,B)</strong>.</td>
+<td>Drug-target databases (ChEMBL, DrugBank, BindingDB), LINCS/CMap perturbation signatures【34†L34-L43】, STRING/KEGG network for propagation.</td>
+<td><strong>P1:</strong> Static target overlap: weight genes in pathways near known targets. <strong>P2:</strong> Network-proximity: RWR distances from drug-A/B targets over PPI. <strong>P3:</strong> LINCS weighting: genes responsive to each drug. <strong>P4:</strong> Apply weights to expression/program scores → encoder. <strong>P5:</strong> Learn a small gating network per drug-pair (trained on train-fold labels).</td>
+<td>Same splits (ensure drug-not-in-train for drug-split scenario!).</td>
+<td><strong>Innovative.</strong> Makes cell embedding context-specific. If it <strong>fails</strong>, target data may be too sparse/noisy; fallback to pure perturbation (next). If it <strong>wins</strong>, drugs’ network context is key. Compare to Perturbation model.</td>
+</tr>
+<tr>
+<td><strong>6. Graph-pretrained gene embeddings</strong></td>
+<td><em>Pretrain:</em> Use unsupervised graph ML (node2vec, GAE, contrastive) on STRING/KEGG to get fixed gene embeddings (64–128d). <em>Cell embedding:</em> Pool (e.g. weighted avg or attention) of gene embeddings by expression.</td>
+<td>Same PPI/STRING/OmniPath graphs, no synergy labels for pretrain.</td>
+<td><strong>P1:</strong> Node2vec or DeepWalk on STRING → gene vectors. <strong>P2:</strong> Graph autoencoder / GraphSAGE on PPI. <strong>P3:</strong> Expression-weighted average or attention pooling to get cell embedding. <strong>P4:</strong> (Optional) Light fine-tuning on train fold only.</td>
+<td>Same splits.</td>
+<td><strong>Modular deep option.</strong> Leverages large unlabeled graph. If it <strong>fails</strong>, topology alone doesn’t capture drug context; skip to end-to-end or add expression fine-tune. If it <strong>succeeds</strong>, use more advanced unsupervised GNN (contrastive, clustering).</td>
+</tr>
+<tr>
+<td><strong>7. Perturbation &amp; dependency integration</strong></td>
+<td>Augment cell encoding with <strong>drug-response</strong> and <strong>dependency</strong> features. For example, use LINCS drug-signatures and DepMap gene essentiality alongside basal expression programs.</td>
+<td>LINCS L1000/CMap signatures【34†L34-L43】; DepMap/CCLE (CRISPR/RNAi dependencies, mutations, CNVs).</td>
+<td><strong>P1:</strong> Append LINCS-derived pathway scores for each drug. <strong>P2:</strong> Append DepMap essentiality scores for each cell. <strong>P3:</strong> Pretrain a monotherapy response encoder (drug→effect on cell lines). <strong>P4:</strong> Multi-task train on monotherapy + synergy labels (split-safe). <strong>P5:</strong> Contrastive alignment between target profile and expression.</td>
+<td>Same splits.</td>
+<td><strong>Long-term, high potential.</strong> Directly models drug→gene effects. If it <strong>fails</strong>, data mismatch/coverage is the issue (try imputing missing). If it <strong>improves</strong>, combine with other priors as final fusion. (CMap has been used to link drugs to gene signatures.)</td>
+</tr>
+<tr>
+<td><strong>8. LLM / multi-agent feature builder</strong></td>
+<td>Use LLM agents to <strong>propose</strong> relevant genes/pathways for drug pairs, grounded in databases. Output structured masks or weights. Integrate these as extra features or masks on gene programs.</td>
+<td>All above + literature APIs (PubMed), but MUST validate via DB (no hallucinations).</td>
+<td><strong>P1:</strong> Retrieval agent: list drug targets, known pathways/mechanisms. <strong>P2:</strong> Validate agent: check each claim in databases (DrugBank, CTD, etc.). <strong>P3:</strong> Feature agent: suggest gene sets/TFs affected by drug combo (with confidences). <strong>P4:</strong> Construct features/masks; feed into main model (e.g. multiply activations).</td>
+<td>Same splits (agent outputs must use only train-fold drugs/cells).</td>
+<td><strong>Experimental.</strong> Can surface novel mechanistic hints. If it <strong>fails</strong>, at least it gathered structured domain knowledge; if it <strong>helps</strong>, refine agents. (Ensure all outputs are database-verified to avoid hallucinations.)</td>
+</tr>
+</tbody>
+</table>
+<p><em>Key notes:</em> Evaluation should compare each phase against the baseline (PCA-128 cell encoding) across all splits (random, drug-out, cell-out, combined). SynVerse found that even “biologically meaningful” features often didn’t beat a one-hot baseline【20†L112-L120】, so robust fold-wise validation and shuffling controls are required. The table above ranks <strong>Approach 1</strong> as highest priority (low-risk interpretability), then Graph modules, etc., down to the more speculative LLM agent. We should prepare fallback strategies (pivot) as noted: if the top choice fails, try the next most orthogonal approach.</p>
+<h1 id="Part-2---Detailed-elaboration-of-each-method">Part 2 – Detailed elaboration of each method</h1>
+<h3 id="1--Program-encoder---small-MLP">1. Program encoder + small MLP</h3>
+<p><strong>Reasoning:</strong> Compressing genes into known biological programs (pathways, regulons) reduces dimension and adds interpretability【8†L88-L91】【11†L23-L32】. For example, PROGENy infers pathway activities from expression using perturbation-derived gene signatures【8†L88-L91】, and DoRothEA provides curated TF→target sets for inferring transcription factor activities. This approach mirrors TranSynergy’s idea of “modeling cellular effect through gene-gene interaction and gene dependency” in a structured way【4†L39-L47】.</p>
+<p><strong>Flow (mermaid diagram):</strong></p>
+<div class="language-mermaid">flowchart LR
+    subgraph Input [Deterministic preprocessing]
+        E_raw[&quot;Cell expression (23k genes)&quot;]
+    end
+    subgraph ProgramScoring [Deterministic: compute biological scores]
+        PR[&quot;PROGENy pathway scores&quot;]
+        TF[&quot;DoRothEA TF activity scores&quot;]
+        HM[&quot;Hallmark/Reactome pathway scores&quot;]
+    end
+    subgraph Encoder [Trainable MLP]
+        MLP[&quot;MLP (2-layer, trainable)&quot;]
+    end
+    subgraph Prediction [Trainable synergy head]
+        HEAD[&quot;Final MLP → Synergy_ZIP&quot;]
+    end
+
+    E_raw --&gt; PR
+    E_raw --&gt; TF
+    E_raw --&gt; HM
+    PR &amp; TF &amp; HM --&gt; Concat[&quot;Concatenate program scores&quot;]
+    Concat --&gt; MLP
+    MLP --&gt; E128[&quot;128-d cell embedding&quot;]
+    E128 --&gt; HEAD
+    DRUGA[&quot;Drug A embed&quot;] --&gt; HEAD
+    DRUGB[&quot;Drug B embed&quot;] --&gt; HEAD
+</div>
+<ul>
+<li><strong>Deterministic blocks:</strong> Compute <strong>PR</strong> (PROGENy) and <strong>TF</strong> (DoRothEA) scores, and any pathway scores. These use only gene expression and fixed weights (no training on synergy data).</li>
+<li><strong>Trainable blocks:</strong> The MLP encoder and final synergy-prediction MLP are trained end-to-end on synergy labels, fold-wise. Drug embeddings and MLP decoder are as in baseline.</li>
+<li><strong>Data splits:</strong> For each train/val/test fold, recompute z-scoring and program scores using <em>only training-cell means/vars</em>. (Do not leak test statistics.) Use the same random/drug/cell/combined splits as baseline.</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1 (PROGENy only):</em> Use PROGENy scores as MLP input. Compare vs PCA baseline.</li>
+<li><em>P2 (DoRothEA only):</em> Use TF scores (VIPER if desired).</li>
+<li><em>P3 (PRO + TF):</em> Concatenate PROGENy + TF activities.</li>
+<li><em>P4 (+ Hallmark/Reactome):</em> Add unsupervised pathway scores (e.g. single-sample GSEA) to cover extra biology.</li>
+<li><em>P5 (+ gene residual):</em> Add a small branch of top-genes or PCA to capture anything missed by programs.</li>
+</ul>
+<p>Each phase’s model is a “new baseline.” We record performance on all splits.</p>
+<p><strong>If fails:</strong> Lack of improvement suggests these program activities are too coarse or orthogonal to synergy signal. We would then pivot to drug-conditioned (method 5) or perturbation methods, meaning perhaps the cell’s generic programs aren’t explaining drug response differences.</p>
+<p><strong>If improves:</strong> We’ll use occlusion analysis (OCA) at the program level: mask one pathway/regulon score and observe Δprediction/Δerror. Also we could try replacing the MLP with an attention-set: treat each program score as a “token” and run a small transformer encoder without positional encoding. This may capture interactions between programs.</p>
+<p><strong>Sources:</strong> PROGENy【8†L88-L91】 and DoRothEA【11†L23-L32】. (Both widely used for activity scoring.) TranSynergy supports knowledge features in synergy【4†L39-L47】.</p>
+<h3 id="2--Graph-derived-module-encoder">2. Graph-derived module encoder</h3>
+<p><strong>Reasoning:</strong> Use biological network structure to define gene modules or smooth signals. For example, aggregate expression by network communities (clusters) or known pathways. This adds context (genes in same pathway behave similarly). Such module-based compression was effective in other domains and avoids training a big GNN.</p>
+<p><strong>Flow:</strong></p>
+<div class="language-mermaid">flowchart LR
+    subgraph Input [Deterministic]
+        E[&quot;Cell expression (23k)&quot;]
+    end
+    subgraph GraphProcessing [Deterministic / fixed]
+        G[&quot;External graph (STRING/PPI)&quot;]
+        cluster[&quot;Cluster or pathway modules&quot;]
+    end
+    subgraph ModuleScoring [Deterministic]
+        Agg[&quot;Aggregate expr. per module (mean)&quot;]
+    end
+    subgraph Encoder [Trainable MLP]
+        MLP2[&quot;MLP&quot;]
+    end
+    E --&gt; Agg
+    Agg --&gt; MLP2
+    MLP2 --&gt; E128
+    E128 --&gt; HEAD[&quot;Synergy head (as above)&quot;]
+    DRUGA --&gt; HEAD
+    DRUGB --&gt; HEAD
+</div>
+<ul>
+<li><strong>Modules:</strong> Could be KEGG/Reactome pathways (predefined sets) or graph clusters from STRING (Louvain).</li>
+<li><strong>Graph smoothing variant:</strong> instead of clustering, one can compute (E' = \alpha E + (1-\alpha) A E) with adjacency (A). Then aggregate or directly feed to MLP.</li>
+<li><strong>Trainable:</strong> Only MLP. The aggregation and clustering are deterministic.</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1:</em> Use curated pathways (each row of KEGG) as modules (sum or ssGSEA) → MLP.</li>
+<li><em>P2:</em> Cluster the STRING graph into ~100–300 modules (e.g. Leiden) → average expression → MLP.</li>
+<li><em>P3:</em> Smooth expression on graph (heat diffusion) and use smoothed features directly into MLP.</li>
+<li><em>P4:</em> Use drug-target propagation weights (RWR from targets) as features (like method 5, but here global).</li>
+<li><em>P5:</em> Combine modules with MLP.</li>
+</ul>
+<p><strong>If fails:</strong> It suggests that unsupervised graph structure didn’t capture synergy-relevant patterns. A full GNN is unlikely to succeed either without more data【20†L112-L120】. We could try the graph-pretrained embedding (next) as a different way to use the network.</p>
+<p><strong>If succeeds:</strong> We can try a shallow GNN (few layers) fine-tuned on synergy to see if joint learning helps. Possibly also add an attention mechanism to modules. Interpret results by checking which modules (pathways/clusters) have high occlusion impact.</p>
+<p><strong>Sources:</strong> Graph smoothing and clustering are standard. TranSynergy used RWR on PPI【4†L39-L47】, which is akin to smoothing from drug targets.</p>
+<h3 id="3--Higher-capacity--GNN---Transformer--model">3. Higher-capacity (GNN / Transformer) model</h3>
+<p><strong>Reasoning:</strong> Directly apply graph neural nets or attention to the gene network. For example, a GNN that passes messages on the STRING network can learn complex patterns. Or a transformer over gene tokens, but without fixed positions, may capture global relations. However, with ~59 cell lines, this is high-risk without pretraining【20†L112-L120】.</p>
+<p><strong>Flow:</strong></p>
+<div class="language-mermaid">flowchart TB
+    Eraw[&quot;Expression (23k genes)&quot;] --&gt; subgraph GraphGNN
+        GNN[&quot;GNN Layers (trainable)&quot;] 
+    end
+    GNN --&gt; Pool[&quot;Pool (mean or attn)&quot;]
+    Pool --&gt; Emb[&quot;128-d embedding&quot;]
+    Emb --&gt; SynergyHead
+    DRUGA[&quot;Drug A&quot;] --&gt; SynergyHead
+    DRUGB[&quot;Drug B&quot;] --&gt; SynergyHead
+    
+    click GraphGNN &quot;LABEL: Nodes=genes, edges=STRING, features=exp.&quot; &quot;hover text&quot;
+</div>
+<p>Or transformer variant: feed each gene’s expression as a token into a set-transformer with a graph-based attention mask, producing a pooled vector.</p>
+<ul>
+<li><strong>Trainable:</strong> GNN layers or attention weights are trained on synergy.</li>
+<li><strong>Pretraining:</strong> Potentially pretrain on large transcriptome data if available.</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1:</em> Shallow GNN on STRING (1–2 layers).</li>
+<li><em>P2:</em> Add graph attention or edge biases (e.g. Transformer with adjacency).</li>
+<li><em>P3:</em> (Optional) Pretrain masked-genes tasks on a large expression compendium.</li>
+<li><em>P4:</em> If GNN fails, try set-attention over GO/pathway tokens (smaller token set).</li>
+</ul>
+<p><strong>If fails:</strong> Likely overfits; we would trust earlier simpler methods instead.<br />
+<strong>If improves:</strong> Explore deeper GNN, graph contrastive pretraining, or integrate drug info into attention.</p>
+<p><strong>Sources:</strong> DeepDDS【30†L136-L144】 demonstrated a GNN+attention outperformed classical methods. But SynVerse【20†L112-L120】 warns GNNs often don’t generalize. Use limited layers and weight sharing cautiously.</p>
+<h3 id="4--Mixture-of-priors-encoder">4. Mixture-of-priors encoder</h3>
+<p><strong>Reasoning:</strong> Combine multiple biological compressors to hedge bets. Each branch (regulon, pathway, graph, PCA) encodes different aspects. We then learn (or fix) how to weight them. This avoids reliance on any single prior.</p>
+<p><strong>Flow:</strong></p>
+<div class="language-mermaid">flowchart TB
+    Eraw[&quot;Expression&quot;] --&gt; RegulonEncoder[&quot;Regulon MLP&quot;]
+    Eraw --&gt; PathwayEncoder[&quot;Pathway MLP&quot;]
+    Eraw --&gt; GraphEncoder[&quot;Graph-modules MLP&quot;]
+    Eraw --&gt; PCAEncoder[&quot;PCA MLP&quot;]
+    RegulonEncoder --&gt; eR[&quot;e_regulon&quot;]
+    PathwayEncoder --&gt; eP[&quot;e_pathway&quot;]
+    GraphEncoder --&gt; eG[&quot;e_graph&quot;]
+    PCAEncoder --&gt; eC[&quot;e_PCA&quot;]
+    subgraph Fusion
+        Combine[&quot;Combine: α_R*eR + α_P*eP + α_G*eG + α_C*eC&quot;]
+    end
+    Combine --&gt; E128[&quot;128-d embedding&quot;]
+    E128 --&gt; Head
+</div>
+<ul>
+<li>Each branch is like a small MLP on different features.</li>
+<li><strong>Trainable:</strong> Branch MLPs and optionally mixing weights α_i.</li>
+<li><strong>Deterministic:</strong> The inputs to each branch (score computations or PCA).</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1:</em> Only Regulon branch.</li>
+<li><em>P2:</em> + Pathway branch.</li>
+<li><em>P3:</em> + Graph-modules branch.</li>
+<li><em>P4:</em> + PCA branch (residual).</li>
+<li><em>P5:</em> Learn sparse α (e.g. via regularization) vs. fix them equally or to (1,1,1,1).</li>
+</ul>
+<p>We can interpret α via occlusion: if α_R ≈0, regulons weren’t useful, etc.</p>
+<p><strong>If fails:</strong> If the mixture falls back to PCA (α_C≈1), it means the curated priors add no synergy signal. In that case, likely more exotic context is needed (drug-conditioned, etc.).<br />
+<strong>If improves:</strong> We learn which prior is most predictive. We could then refine the winning branch further.</p>
+<p><strong>Sources:</strong> This is a meta-architecture. It naturally includes Approach 1 and 2 as subcases. SynVerse’s negative result【20†L112-L120】 suggests all branches might fail, but this approach will confirm that by weights.</p>
+<h3 id="5--Drug-conditioned-encoder">5. Drug-conditioned encoder</h3>
+<p><strong>Reasoning:</strong> Different drug pairs may “activate” different parts of the cell’s biology. We use known drug targets or signatures to focus the cell embedding on relevant genes. For example, if Drug A targets kinases, emphasize kinase-pathway genes in expression.</p>
+<p><strong>Flow:</strong></p>
+<div class="language-mermaid">flowchart LR
+    subgraph Drugs [Deterministic]
+        DRUGA[&quot;Drug A&quot;] --&gt; TargetsA[&quot;Known targets A (Deterministic)&quot;]
+        DRUGB[&quot;Drug B&quot;] --&gt; TargetsB[&quot;Known targets B&quot;]
+    end
+    subgraph Network [Deterministic]
+        TargetsA --&gt; RWR[&quot;RWR on PPI (gene scores)&quot;]
+        TargetsB --&gt; RWR
+        LINCS[&quot;LINCS CMap signature&quot;] --&gt; ResponseA
+        LINCS --&gt; ResponseB
+    end
+    subgraph Gating [Deterministic or Trainable]
+        Eraw[&quot;Expression&quot;] --&gt; Gate[&quot;Weight by (TargetsA + TargetsB scores)&quot;]
+    end
+    Gate --&gt; EncoderBranch[&quot;Any encoder (e.g. regulon MLP)&quot;]
+    EncoderBranch --&gt; E128
+    E128 --&gt; SynergyHead
+</div>
+<ul>
+<li><strong>Deterministic:</strong> Mapping each drug to known targets; network diffusion (Random Walk) from targets to all genes (yields gene relevance scores)【4†L39-L47】. LINCS: known drug-induced expression patterns.</li>
+<li><strong>Gate:</strong> Apply relevance scores to gene expression (e.g. multiply or mask). Optionally learn a small gating network (trainable) on top of these.</li>
+<li><strong>Trainable:</strong> MLP on weighted expression, plus synergy head.</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1:</em> Use target overlap: e.g. select genes in pathways containing any target.</li>
+<li><em>P2:</em> RWR on PPI: genes near targets get high weight.</li>
+<li><em>P3:</em> LINCS: weight genes by known up/down regulation under each drug.</li>
+<li><em>P4:</em> Plug weighted expression into regulon/pathway encoder.</li>
+<li><em>P5:</em> Let a small NN learn to combine drug-scores and expression (fold-wise train, no leakage from held-out drugs).</li>
+</ul>
+<p><strong>If fails:</strong> Perhaps drug-target data is incomplete. Then pure perturbation (LINCS) or MoA descriptors may be better.<br />
+<strong>If improves:</strong> This approach directly tests if context matters. We would analyze which genes/programs get gated. A win here suggests training a full drug-aware graph neural net might be next.</p>
+<p><strong>Sources:</strong> Drug→target networks are common (DrugBank). TranSynergy used RWR to expand targets【4†L39-L47】. LINCS L1000【34†L34-L43】 provides empirical target-response data.</p>
+<h3 id="6--Graph-pretrained-gene-embeddings">6. Graph-pretrained gene embeddings</h3>
+<p><strong>Reasoning:</strong> Learn gene embeddings from large biological graphs without synergy labels. For example, run node2vec or a graph autoencoder on STRING to get a vector for each gene that captures network context. Then, for a cell line, combine these embeddings weighted by expression (as in DeepSet). This modularizes the problem and uses vast external data.</p>
+<p><strong>Flow:</strong></p>
+<div class="language-mermaid">flowchart LR
+    subgraph Pretrain [Unsupervised pretraining]
+        G[&quot;STRING graph&quot;] --&gt; node2vec[&quot;Node2vec/GAE → gene embeddings&quot;]
+    end
+    subgraph Pooling [Fixed weights]
+        Eraw --&gt; WeightedPool[&quot;Weighted avg of gene-embeddings (fixed)&quot;]
+        WeightedPool --&gt; E128
+    end
+    E128 --&gt; SynergyHead
+    DRUGA --&gt; SynergyHead
+    DRUGB --&gt; SynergyHead
+</div>
+<ul>
+<li><strong>Pretraining:</strong> e.g. Node2Vec, Graph Autoencoder yields gene vectors (static).</li>
+<li><strong>Pooling:</strong> For each cell: (e_{\rm cell} = \sum_i \text{exp}_i * \text{emb}_i). Could also use attention (trainable) on top of gene embeddings.</li>
+<li><strong>Trainable:</strong> The attention or pooling MLP and synergy head.</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1:</em> Node2vec embeddings (64/128d), pool by expression mean.</li>
+<li><em>P2:</em> Graph autoencoder embeddings, pool.</li>
+<li><em>P3:</em> (Optional) Pretrain a GNN with contrastive losses.</li>
+<li><em>P4:</em> Add a small attention MLP to pool embeddings (trainable on train fold only).</li>
+<li><em>P5:</em> Fine-tune gene embeddings on train folds (cautiously, since few samples).</li>
+</ul>
+<p><strong>If fails:</strong> Likely the structure-based embeddings ignored expression context. We might need to incorporate expression in pretraining (e.g. GraphSAGE).<br />
+<strong>If helps:</strong> We see that network topology provides a good basis, so we can try deeper GNN transfer (fine-tune on synergy).</p>
+<p><strong>Sources:</strong> Graph embedding methods (node2vec) are standard. This is a precaution against end-to-end overfitting. Similar ideas of transferring embeddings have been used in biology (word2vec-like protein embeddings).</p>
+<h3 id="7--Perturbation-and-dependency-integration">7. Perturbation and dependency integration</h3>
+<p><strong>Reasoning:</strong> Drug synergy arises from drug effects on the cell. Integrating known gene-level perturbation data can inform which genes the drugs might affect. LINCS/CMap【34†L34-L43】 contains thousands of drug-induced gene-expression profiles. DepMap contains CRISPR/RNAi essentiality (gene dependencies) across hundreds of cell lines. Including these as features can enrich the context beyond basal expression.</p>
+<p><strong>Flow:</strong></p>
+<div class="language-mermaid">flowchart LR
+    Drugs -&gt; LINCS_feat[&quot;Map to LINCS signature features&quot;]
+    Cells -&gt; DepMap_feat[&quot;Map to DepMap dependency features&quot;]
+    Eraw[&quot;Basal expression&quot;] --&gt; ProgramEncoder[&quot;Regulon/Pathway encoder&quot;]
+    subgraph Fusion [Combine features]
+        ProgramEncoder
+        LINCS_feat
+        DepMap_feat
+    end
+    Fusion --&gt; MLPfusion[&quot;Fusion MLP&quot;]
+    MLPfusion --&gt; E128
+    E128 --&gt; SynergyHead
+    DRUGA --&gt; SynergyHead
+    DRUGB --&gt; SynergyHead
+</div>
+<ul>
+<li><strong>Deterministic:</strong> Extract features: from each drug, fetch its LINCS vector or project onto pathways; from each cell, take its top dependencies.</li>
+<li><strong>Trainable:</strong> The fusion MLP that ingests (cell state embedding, plus these features). Possibly multitask or contrastive loss with these modalities.</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1:</em> Augment cell input by appending drug LINCS signature (or summary) to the embedding.</li>
+<li><em>P2:</em> Add cell-line DepMap gene effect scores as features.</li>
+<li><em>P3:</em> Pretrain separate monotherapy autoencoder (drug→gene response) on LINCS, freeze into synergy model.</li>
+<li><em>P4:</em> Multitask train: predict synergy and also reconstruct LINCS/monotherapy response.</li>
+<li><em>P5:</em> Use contrastive loss: align drug target profile with observed signatures.</li>
+</ul>
+<p><strong>If fails:</strong> Possibly drug signature not aligned to synergy conditions. We may restrict to well-characterized drugs or use only correlation metrics.<br />
+<strong>If improves:</strong> Strong indication that actual drug effects matter; consider full multi-modal net (with drug pathway branch).</p>
+<p><strong>Sources:</strong> LINCS/CMap data enables linking drugs to gene changes【34†L34-L43】. CODE-AE【arxiv:2102.00538】 is a related idea for deconfounded representations, supporting transfer learning in drug response.</p>
+<h3 id="8--LLM---Multi-agent-feature-builder">8. LLM / Multi-agent feature builder</h3>
+<p><strong>Reasoning:</strong> Use language models and agents to query the literature/databases for mechanistic insights. For a given (DrugA, DrugB, Cell), agents could propose which genes or pathways are jointly relevant, which then become features or masks in the model. This is not the core predictor but a tool to guide feature design.</p>
+<p><strong>Flow:</strong></p>
+<div class="language-mermaid">flowchart LR
+    Drugs &amp; Cell --&gt; Agent1[&quot;Drug mechanism agent&quot;]
+    Agent1 --&gt; RawCands[&quot;Candidate genes/pathways&quot;]
+    RawCands --&gt; Validator[&quot;Knowledge-based validation&quot;]
+    Validator --&gt; Mask[&quot;Final gene/pathway mask&quot;]
+    Mask --&gt; FeatureBlock[&quot;Apply mask to encoder (e.g. weight or drop genes)&quot;]
+    FeatureBlock --&gt; Encoder/MLP
+    Encoder/MLP --&gt; E128 --&gt; SynergyHead
+    DRUGA --&gt; SynergyHead
+    DRUGB --&gt; SynergyHead
+</div>
+<ul>
+<li><strong>Agent1:</strong> LLM retrieves known drug targets, pathways, side-effects (from databases/text).</li>
+<li><strong>Validator:</strong> Check each retrieved fact (e.g. using DrugBank or CTD APIs) to avoid hallucination.</li>
+<li><strong>Mask:</strong> A binary or weighted mask on genes (e.g. “genes likely affected by A or B” or “TFs regulating those genes”).</li>
+<li><strong>Integration:</strong> Multiply the mask with expression or program scores before passing to MLP.</li>
+</ul>
+<p><strong>Phases:</strong></p>
+<ul>
+<li><em>P1:</em> Simple retrieval: list DrugA/B targets &amp; shared pathways.</li>
+<li><em>P2:</em> Agent builds hypotheses (e.g. “DrugA activates TF X”). Validate or discard.</li>
+<li><em>P3:</em> Form a final feature vector (e.g. indicator of each top pathway/regulon).</li>
+<li><em>P4:</em> Train synergy model with these extra features. (Agents are not trained here.)</li>
+</ul>
+<p><strong>If fails:</strong> The agents may not add useful signal or may hallucinate. In that case, revert to purely data-driven priors.<br />
+<strong>If helps:</strong> The masked genes or features should highlight new biology. We could then automate more iterations (agent suggests features → model evaluates importance via OCA → agent refines).</p>
+<p><strong>Sources:</strong> No specific references (this is an experimental idea). Similar multi-agent frameworks exist (e.g. ARC-AGI), but emphasis is on database grounding.</p>
+<h1 id="Part-3---Other-ideas-not-fully-developed">Part 3 – Other ideas not fully developed</h1>
+<ul>
+<li><strong>Raw-gene transformer (no positional encoding):</strong> Treat each gene as a token with no fixed order. Too many tokens (23k) and few samples make this high-risk without massive pretraining (cf. Geneformer requiring millions of cells). Likely infeasible directly.</li>
+<li><strong>End-to-end cell GNN:</strong> Directly feed full graph GNN. Probably overfits (SynVerse found GNNs struggled) unless huge regularization or transfer-learning is used.</li>
+<li><strong>Contrastive/self-supervised transcriptome models:</strong> E.g. train a VAE/A​E on CCLE/NCI-60 data to embed expression, then fine-tune. Could be tried but risk learning batch effects.</li>
+<li><strong>Chemical graph encoder upgrades:</strong> Upgrade drug branch (not central to gene compression), e.g. pretrain MolGNet or ChemBERTa. This may help overall but doesn’t address gene dimension.</li>
+<li><strong>Focused subset training:</strong> Train separate models on only high-synergy (or only low-synergy) examples to highlight extreme interactions, then distill into main model. Risk of bias if not handled carefully.</li>
+<li><strong>Random pathway controls:</strong> Use random gene sets of same sizes as Hallmark for negative controls, to ensure any signal is not random. (Not a stand-alone method but essential validation.)</li>
+<li><strong>Mixture-of-experts with gating:</strong> Instead of fixed α, a gating network (conditioned on drug features) that selects which encoder to trust. More complex, similar in spirit to drug-conditioned gating above.</li>
+<li><strong>Batch correction / domain adaptation:</strong> Models to adjust for dataset shifts (NCI-60 unique distribution vs others). Could include adversarial or normalization layers. Unlikely to fix the main dimension issue.</li>
+</ul>
+<p><strong>Sources (cont’d):</strong> Additional insights from related work: SynVerse【20†L112-L120】 emphasizes caution, and recent embedding studies【23†L171-L180】 show how learned embeddings can capture similarity in scarce data. Use all prior knowledge carefully and validate thoroughly.</p>
+
+</body>
+</html>
