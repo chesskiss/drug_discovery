@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 
@@ -107,6 +108,21 @@ def save_regression_plot(
     if frame.empty:
         return
 
+    x = frame["y_true"].to_numpy(dtype=float)
+    y = frame["y_pred"].to_numpy(dtype=float)
+    fit_annotation: list[str] = []
+    if len(frame) >= 2 and np.nanstd(x) > 0:
+        slope, intercept = np.polyfit(x, y, deg=1)
+        fitted_y = slope * x + intercept
+        residual_sum_squares = float(np.sum((y - fitted_y) ** 2))
+        total_sum_squares = float(np.sum((y - np.mean(y)) ** 2))
+        r_squared = 1.0 - residual_sum_squares / total_sum_squares if total_sum_squares > 0 else float("nan")
+        if np.isfinite(r_squared):
+            fit_annotation.append(f"$R^2$ = {r_squared:.4f}")
+        if np.isfinite(slope) and np.isfinite(intercept):
+            sign = "+" if intercept >= 0 else "-"
+            fit_annotation.append(f"$\\hat{{y}}$ = {slope:.3f}x {sign} {abs(intercept):.3f}")
+
     combined_min = float(min(frame["y_true"].min(), frame["y_pred"].min()))
     combined_max = float(max(frame["y_true"].max(), frame["y_pred"].max()))
     padding = max((combined_max - combined_min) * 0.05, 1e-6)
@@ -131,6 +147,17 @@ def save_regression_plot(
         edgecolors="none",
     )
     plt.plot([line_min, line_max], [line_min, line_max], linestyle="--", linewidth=2, color="black")
+    if fit_annotation:
+        plt.text(
+            0.97,
+            0.97,
+            "\n".join(fit_annotation[:2]),
+            transform=plt.gca().transAxes,
+            ha="right",
+            va="top",
+            fontsize=10,
+            bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": "0.7", "alpha": 0.85},
+        )
     plt.xlim(line_min, line_max)
     plt.ylim(line_min, line_max)
     plt.xlabel("True Synergy")

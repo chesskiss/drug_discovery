@@ -76,13 +76,38 @@ def backfill_single_run(run_dir: Path) -> bool:
 
 
 def backfill_cv_run(run_dir: Path) -> bool:
+    matched = False
+
+    fold_root = run_dir / "fold_runs"
+    if fold_root.exists():
+        for fold_dir in sorted(path for path in fold_root.iterdir() if path.is_dir()):
+            predictions_path = fold_dir / "test_predictions.csv"
+            if not predictions_path.exists():
+                continue
+
+            frame = normalize_prediction_frame(pd.read_csv(predictions_path))
+            if frame.empty:
+                continue
+
+            plot_path = build_regression_figure_path(fold_dir, fold_dir.name)
+            save_regression_plot(
+                plot_path,
+                targets=frame["y_true"].tolist(),
+                predictions=frame["y_pred"].tolist(),
+                run_label=fold_dir.name,
+                mse=compute_mse(frame),
+                pearson=compute_pearson(frame),
+            )
+            print(f"Saved CV fold regression plot to {plot_path}")
+            matched = True
+
     predictions_path = run_dir / "cv_test_predictions.csv"
     if not predictions_path.exists():
-        return False
+        return matched
 
     frame = normalize_prediction_frame(pd.read_csv(predictions_path))
     if frame.empty:
-        return False
+        return matched
 
     plot_path = build_regression_figure_path(run_dir, "cv_aggregate", aggregate=True)
     save_regression_plot(
