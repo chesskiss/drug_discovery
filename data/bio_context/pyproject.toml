@@ -1,0 +1,17 @@
+[project]
+name = "bio-context"
+version = "0.1.0"
+description = "Download scripts for small biological prior-knowledge resources (pathways, TF regulons, etc.)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "requests",
+]
+
+[tool.uv]
+package = false
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
