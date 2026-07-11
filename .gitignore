@@ -51,5 +51,13 @@ cell_line_difficulty/outputs_predictive_smoke/
 drug_synergy_baseline/outputs/
 
 # Too heavy to track, can be re-downloaded from the DrugComb portal if needed.
-data_compression/zscore_var_pca_128/data/* 
+data/data_compression/zscore_var_pca_128/data/*
+data/data_compression/source_data/*
 drug_synergy_baseline/data/
+
+# Generated/downloaded data artifacts anywhere in the repo
+*.csv
+*.pkl
+*.npz
+!data/bio_context/**/*.csv
+!drug_synergy_baseline/results/*.csv
