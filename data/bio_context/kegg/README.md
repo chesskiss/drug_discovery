@@ -91,18 +91,54 @@ articulation-point detection per pathway) computed from the same KGML data — n
 uv run --project data/bio_context data/bio_context/kegg/download_kegg.py
 ```
 
-Output: `data/kegg_human_gene_pathways.csv` with columns `gene_id` (KEGG `hsa:<entrez>` id),
-`gene_symbol`, `pathway_id`, `pathway_name`, `degree` (see above).
+Output: `data/kegg_human_gene_pathways.csv`, one row per (gene, pathway) pair, columns:
+
+| Column | Meaning |
+|---|---|
+| `gene_id` | KEGG `hsa:<entrez>` id |
+| `gene_symbol` | primary gene symbol |
+| `pathway_id` | KEGG `path:hsa#####` id |
+| `pathway_name` | human-readable pathway name |
+| `category` | BRITE `br08901` top-level category (Metabolism, Human Diseases, ...) |
+| `is_enzyme` | gene has an EC/enzyme link (`link/enzyme/hsa`) — a drug-target hint, not a filter |
+| `degree` | # reaction/relation edges touching that gene's node in this pathway's graph |
+| `betweenness` | networkx betweenness centrality (0–1) of that gene's node in this pathway's graph |
+| `is_articulation` | removing that gene's node disconnects this pathway's graph (hard bottleneck) |
+| `importance` | combined score: `max(1 − 1/(1+degree), betweenness)`, overridden to `1.0` if `is_articulation` |
 
 Fetching the 372 per-pathway KGML files takes a couple of minutes (one request per pathway,
-~0.1 s delay between requests to be polite to the free public API).
+~0.1 s delay between requests to be polite to the free public API), plus two small extra REST
+calls (`link/enzyme/hsa` for `is_enzyme`, `get/br:br08901/json` for `category`).
+
+### The graph metrics (`degree` / `betweenness` / `is_articulation` / `importance`)
+
+- **`degree`** is local connectivity — how many edges touch the node. Loosely tracks importance
+  (centrality-lethality), but misses low-degree bottlenecks.
+- **`betweenness`** catches those bottlenecks: a gene with few edges can still lie on the only path
+  bridging two halves of a pathway (e.g. rate-limiting enzymes like PFK1 / HMG-CoA reductase —
+  Metabolic Control Analysis, Kacser & Burns). networkx normalizes it to 0–1, comparable across
+  pathways of different sizes.
+- **`is_articulation`** is the discrete, provable version of a bottleneck: remove this node and the
+  pathway graph splits into disconnected pieces. Treated as the strongest signal, so `importance`
+  is forced to `1.0` there.
+- **Graph construction:** metabolic pathways connect enzymes only *through* shared compound nodes
+  (enzyme → compound → enzyme), so the per-pathway graph includes compound/ortholog/group nodes
+  for correct connectivity (`map` link-nodes excluded to avoid artificial shortcuts); metrics are
+  reported only for `gene` nodes. Isozyme-bundled nodes share their metrics across all their genes.
+- **Still not a `weight`.** All four are topology, not a statistically-derived per-gene effect size
+  like PROGENy's `weight`. They rank structural centrality within a pathway, not magnitude/direction
+  of effect on its output.
 
 ## Contents (actual downloaded file)
 
-- **File:** `data/kegg_human_gene_pathways.csv` — 3.1 MB, 39,543 rows.
-- **9,416 unique genes**, **372 unique pathways**.
-- `degree`: mean 2.6, median 1, max 179 (`FASN` in Fatty acid biosynthesis — a large multi-step
-  enzyme). 11,253 rows (28%) have `degree=0`.
+- **File:** `data/kegg_human_gene_pathways.csv` — ~5 MB, 39,545 rows (KEGG updates the underlying
+  annotations over time, so exact counts drift slightly between downloads).
+- **9,416 unique genes**, **372 unique pathways**, zero null `category`.
+- `category` row split: Human Diseases 13,264 · Organismal Systems 8,527 · Environmental Info
+  Processing 6,262 · Metabolism 5,238 · Cellular Processes 3,642 · Genetic Info Processing 2,612.
+- `is_enzyme`: 2,491 unique genes flagged (genes that are both EC-linked *and* in ≥1 pathway;
+  KEGG lists 3,503 EC-linked human genes total, but the rest are in no pathway).
+- `importance`: median 0.5, max 1.0; `betweenness` median 0.0, max 0.78; 11,369 articulation rows.
 - Just the metabolic-pathways map (`map01100`/`hsa01100`) alone is much smaller: 1,587 genes,
   37 KB — use `rest.kegg.jp/link/hsa/path:hsa01100` directly if you only want that one map.
 

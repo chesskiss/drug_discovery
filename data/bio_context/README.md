@@ -34,6 +34,7 @@ bio_context/
 - [`progeny/`](progeny/README.md) — PROGENy pathway-responsive gene weights: 14 signaling
   pathways, 1,295 unique genes, 72 KB. Has statistically-derived per-gene `weight`.
 - [`kegg/`](kegg/README.md) — KEGG gene-to-pathway membership: 372 human pathways (metabolic,
-  signaling, disease, etc.), 9,416 unique genes, 3.1 MB. No weights — only a structural
-  `degree` proxy (see dataset README for caveats).
+  signaling, disease, etc.), 9,416 unique genes, ~5 MB. No statistical weights — instead
+  per-(gene,pathway) structural metrics: `category`, `is_enzyme`, `degree`, `betweenness`,
+  `is_articulation`, and a combined `importance` (see dataset README for caveats).
 
