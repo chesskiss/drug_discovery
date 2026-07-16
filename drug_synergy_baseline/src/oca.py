@@ -164,6 +164,9 @@ def build_test_bundle_from_config(
             train_fraction=train_fraction,
             val_fraction=val_fraction,
             stratified=bool(config.get("stratified_cv", False)),
+            holdout_fraction=float(config.get("holdout_test_fraction", 0.0)),
+            holdout_seed=int(config.get("holdout_seed", 42)),
+            holdout_mode=str(config.get("holdout_mode", "instead")),
         )
     else:
         datasets = build_datasets(

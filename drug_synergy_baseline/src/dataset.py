@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 import numpy as np
@@ -45,6 +45,8 @@ class DatasetBundle:
     train_rows: pd.DataFrame
     val_rows: pd.DataFrame
     test_rows: pd.DataFrame
+    holdout: Dataset | None = None
+    holdout_rows: pd.DataFrame | None = None
 
 
 def load_aligned_synergy_and_expression(
@@ -207,6 +209,70 @@ def split_drug_and_cell_line_priority_rows(
     val_rows = working_df[working_df["split"] == "val"].drop(columns=["split"]).copy()
     test_rows = working_df[working_df["split"] == "test"].drop(columns=["split"]).copy()
     return train_rows, val_rows, test_rows
+
+
+def select_holdout_groups(
+    values: list[str],
+    *,
+    fraction: float,
+    random_seed: int,
+) -> set[str]:
+    if not values:
+        raise ValueError("Cannot select a holdout from an empty group set.")
+
+    unique_values = np.asarray(sorted(set(values)))
+    rng = np.random.default_rng(random_seed)
+    rng.shuffle(unique_values)
+
+    n_groups = len(unique_values)
+    holdout_count = max(1, int(round(n_groups * fraction)))
+    holdout_count = min(holdout_count, n_groups - 1)
+    return set(unique_values[:holdout_count].tolist())
+
+
+def split_global_holdout_rows(
+    synergy_df: pd.DataFrame,
+    *,
+    holdout_fraction: float,
+    random_seed: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, list[str]]]:
+    """Carve a global cold drug + cold cell-line holdout once, before any fold split.
+
+    Returns ``(pool_df, holdout_df, groups)`` where ``pool_df`` is the remaining
+    data used for cross-validation and ``groups`` records the exact reserved
+    drugs/cell lines for auditing.
+    """
+    all_drugs = sorted(set(synergy_df["smiles_a"].astype(str)) | set(synergy_df["smiles_b"].astype(str)))
+    holdout_drugs = select_holdout_groups(all_drugs, fraction=holdout_fraction, random_seed=random_seed)
+    holdout_cells = select_holdout_groups(
+        synergy_df["cell_line"].astype(str).tolist(),
+        fraction=holdout_fraction,
+        random_seed=random_seed + 1,
+    )
+
+    pool_df, _empty_val, holdout_df = split_drug_and_cell_line_priority_rows(
+        synergy_df,
+        val_drugs=set(),
+        test_drugs=holdout_drugs,
+        val_cells=set(),
+        test_cells=holdout_cells,
+    )
+    if pool_df.empty or holdout_df.empty:
+        raise ValueError(
+            "Global holdout produced an empty split "
+            f"(pool={len(pool_df)}, holdout={len(holdout_df)}). "
+            "Lower --holdout-test-fraction."
+        )
+
+    groups = {
+        "holdout_drugs": sorted(holdout_drugs),
+        "holdout_cell_lines": sorted(holdout_cells),
+    }
+    return (
+        pool_df.reset_index(drop=True),
+        holdout_df.reset_index(drop=True),
+        groups,
+    )
 
 
 def split_synergy_rows(
@@ -404,6 +470,9 @@ def build_cv_dataset_bundle(
     train_fraction: float,
     val_fraction: float,
     stratified: bool = False,
+    holdout_fraction: float = 0.0,
+    holdout_seed: int = 42,
+    holdout_mode: str = "instead",
 ) -> DatasetBundle:
     observed_fraction = train_fraction + val_fraction
     if observed_fraction <= 0 or observed_fraction >= 1:
@@ -411,44 +480,95 @@ def build_cv_dataset_bundle(
     else:
         val_fraction_within_train = val_fraction / observed_fraction
 
+    holdout_enabled = holdout_fraction is not None and holdout_fraction > 0
+    if holdout_enabled and holdout_mode not in {"instead", "additional"}:
+        raise ValueError(f"Unsupported holdout_mode: {holdout_mode}")
+
+    # Carve the shared global holdout once (deterministic in holdout_seed only), so
+    # every fold and every cv seed is graded on the exact same reserved rows.
+    cv_df = synergy_df
+    holdout_df: pd.DataFrame | None = None
+    if holdout_enabled:
+        if split_strategy == "drug_and_cell_line":
+            cv_df, holdout_df, _groups = split_global_holdout_rows(
+                synergy_df,
+                holdout_fraction=holdout_fraction,
+                random_seed=holdout_seed,
+            )
+        elif split_strategy == "random":
+            holdout_rng = np.random.default_rng(holdout_seed)
+            shuffled = np.arange(len(synergy_df))
+            holdout_rng.shuffle(shuffled)
+            holdout_count = max(1, int(round(len(synergy_df) * holdout_fraction)))
+            holdout_count = min(holdout_count, len(synergy_df) - 1)
+            holdout_positions = shuffled[:holdout_count]
+            pool_mask = np.ones(len(synergy_df), dtype=bool)
+            pool_mask[holdout_positions] = False
+            cv_df = synergy_df.loc[pool_mask].reset_index(drop=True)
+            holdout_df = synergy_df.iloc[holdout_positions].reset_index(drop=True)
+        else:
+            raise ValueError(f"Unsupported CV split strategy: {split_strategy}")
+
+    use_holdout_as_test = holdout_enabled and holdout_mode == "instead"
+
     if split_strategy == "random":
-        folds = build_row_cv_folds(synergy_df, num_folds=num_folds, seed=seed, stratified=stratified)
+        folds = build_row_cv_folds(cv_df, num_folds=num_folds, seed=seed, stratified=stratified)
         test_indices = folds[fold_idx]
-        mask = np.ones(len(synergy_df), dtype=bool)
-        mask[test_indices] = False
-        remaining = synergy_df.loc[mask].reset_index(drop=True)
-        test_rows = synergy_df.iloc[test_indices].reset_index(drop=True)
 
-        shuffled_indices = np.arange(len(remaining))
-        fold_rng = np.random.default_rng(seed * 1000 + fold_idx)
-        fold_rng.shuffle(shuffled_indices)
+        if use_holdout_as_test:
+            # Fold bucket becomes validation only; the global holdout is the test set.
+            val_rows = cv_df.iloc[test_indices].reset_index(drop=True)
+            train_mask = np.ones(len(cv_df), dtype=bool)
+            train_mask[test_indices] = False
+            train_rows = cv_df.loc[train_mask].reset_index(drop=True)
+            test_rows = holdout_df
+        else:
+            mask = np.ones(len(cv_df), dtype=bool)
+            mask[test_indices] = False
+            remaining = cv_df.loc[mask].reset_index(drop=True)
+            test_rows = cv_df.iloc[test_indices].reset_index(drop=True)
 
-        val_count = max(1, int(len(shuffled_indices) * val_fraction_within_train))
-        if val_count >= len(shuffled_indices):
-            val_count = max(1, len(shuffled_indices) - 1)
+            shuffled_indices = np.arange(len(remaining))
+            fold_rng = np.random.default_rng(seed * 1000 + fold_idx)
+            fold_rng.shuffle(shuffled_indices)
 
-        val_rows = remaining.iloc[shuffled_indices[:val_count]].reset_index(drop=True)
-        train_rows = remaining.iloc[shuffled_indices[val_count:]].reset_index(drop=True)
+            val_count = max(1, int(len(shuffled_indices) * val_fraction_within_train))
+            if val_count >= len(shuffled_indices):
+                val_count = max(1, len(shuffled_indices) - 1)
+
+            val_rows = remaining.iloc[shuffled_indices[:val_count]].reset_index(drop=True)
+            train_rows = remaining.iloc[shuffled_indices[val_count:]].reset_index(drop=True)
     elif split_strategy == "drug_and_cell_line":
-        all_drugs = sorted(set(synergy_df["smiles_a"].astype(str)) | set(synergy_df["smiles_b"].astype(str)))
+        all_drugs = sorted(set(cv_df["smiles_a"].astype(str)) | set(cv_df["smiles_b"].astype(str)))
         drug_folds = split_unique_values_into_folds(
             all_drugs,
             num_folds=num_folds,
             random_seed=seed,
         )
         cell_folds = split_unique_values_into_folds(
-            synergy_df["cell_line"].astype(str).tolist(),
+            cv_df["cell_line"].astype(str).tolist(),
             num_folds=num_folds,
             random_seed=seed,
         )
-        val_fold_idx = (fold_idx + 1) % num_folds
-        train_rows, val_rows, test_rows = split_drug_and_cell_line_priority_rows(
-            synergy_df,
-            val_drugs=drug_folds[val_fold_idx],
-            test_drugs=drug_folds[fold_idx],
-            val_cells=cell_folds[val_fold_idx],
-            test_cells=cell_folds[fold_idx],
-        )
+        if use_holdout_as_test:
+            # Current fold's bucket becomes validation; the global holdout is the test set.
+            train_rows, val_rows, _empty_test = split_drug_and_cell_line_priority_rows(
+                cv_df,
+                val_drugs=drug_folds[fold_idx],
+                test_drugs=set(),
+                val_cells=cell_folds[fold_idx],
+                test_cells=set(),
+            )
+            test_rows = holdout_df
+        else:
+            val_fold_idx = (fold_idx + 1) % num_folds
+            train_rows, val_rows, test_rows = split_drug_and_cell_line_priority_rows(
+                cv_df,
+                val_drugs=drug_folds[val_fold_idx],
+                test_drugs=drug_folds[fold_idx],
+                val_cells=cell_folds[val_fold_idx],
+                test_cells=cell_folds[fold_idx],
+            )
         if train_rows.empty or val_rows.empty or test_rows.empty:
             raise ValueError(
                 "drug_and_cell_line CV produced an empty split "
@@ -461,7 +581,7 @@ def build_cv_dataset_bundle(
     else:
         raise ValueError(f"Unsupported CV split strategy: {split_strategy}")
 
-    return build_dataset_bundle_from_rows(
+    bundle = build_dataset_bundle_from_rows(
         train_rows=train_rows,
         val_rows=val_rows,
         test_rows=test_rows,
@@ -469,6 +589,20 @@ def build_cv_dataset_bundle(
         smiles_dim=smiles_dim,
         gene_dim=gene_dim,
     )
+
+    # In "additional" mode the fold keeps its own test set, and the shared holdout
+    # is attached as an extra dataset scored separately by the trainer.
+    if holdout_enabled and holdout_mode == "additional":
+        holdout_dataset = DrugSynergyDataset(
+            holdout_df, expression_lookup, smiles_dim=smiles_dim, gene_dim=gene_dim
+        )
+        bundle = replace(
+            bundle,
+            holdout=holdout_dataset,
+            holdout_rows=holdout_df.reset_index(drop=True),
+        )
+
+    return bundle
 
 
 def build_datasets(

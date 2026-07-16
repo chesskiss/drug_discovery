@@ -246,6 +246,7 @@ The training entrypoint now supports:
 - `--cv-folds <k>`
 - `--cv-seeds <seed ...>`
 - `--stratified-cv`
+- `--holdout-test-fraction <f>`, `--holdout-seed <n>`, `--holdout-mode instead|additional`
 - `--train-fraction`, `--val-fraction`
 - `--max-samples`
 
@@ -255,6 +256,44 @@ Cross-validation supports:
 - `--split-strategy drug_and_cell_line`
 
 For `drug_and_cell_line`, CV is group-aware repeated holdout rather than classic row-disjoint CV.
+
+#### Shared global holdout test set
+
+By default every fold builds its own cold-start test set, so each fold is graded on a *different* set of
+rows. To grade all folds on the *same* reserved set, use a global holdout that is carved out once, before
+any fold splitting, using the same cold drug + cold cell-line exclusion logic:
+
+- `--holdout-test-fraction <f>` — group fraction reserved as the shared test set. `0` disables (default).
+- `--holdout-seed <n>` — seed for the carve. Deliberately separate from `--cv-seeds` so the holdout is
+  identical across every CV seed.
+- `--holdout-mode instead|additional`
+  - `instead` (default): the shared holdout **is** each fold's test set; the fold's own group bucket is used
+    for validation only.
+  - `additional`: each fold keeps its own cold test set **and** is also scored on the shared holdout as an
+    extra metric.
+
+> **Group fraction ≠ row fraction.** Because a row is reserved when *either* drug *or* its cell line is
+> held out, `--holdout-test-fraction 0.1` removes roughly `1 − 0.9³ ≈ 27%` of *rows*, not 10%. The runner
+> prints the realized row fraction and records it in `cv_metrics.json` (`global_holdout`). This is the same
+> `or`-based behavior the per-fold splits already have.
+
+Extra outputs when a holdout is enabled: `global_holdout_groups.json` (the exact reserved drugs/cell lines
+and counts), `global_holdout_test.csv` (the reserved rows), and `cv_holdout_ensemble.csv` plus an ensemble
+regression plot (per-fold predictions on the shared holdout, averaged into a mean/std ensemble). In
+`additional` mode each fold dir also gets `holdout_predictions.csv`.
+
+```bash
+uv run python -m src.train \
+  --output-dir outputs/cv10_drug_and_cell_line_10k_holdout \
+  --split-strategy drug_and_cell_line \
+  --cell-feature-view 1 \
+  --cv-folds 10 \
+  --cv-seeds 42 \
+  --max-samples 10000 \
+  --epochs 5 \
+  --holdout-test-fraction 0.1 \
+  --holdout-mode instead
+```
 
 ### Fastest first runs
 
