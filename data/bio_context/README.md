@@ -10,13 +10,17 @@ dataset's README notes how many unique genes it contributes.
 
 ## Layout
 
-Each dataset lives in its own subfolder:
+Each dataset lives in its own subfolder, alongside two shared helpers used to align datasets
+onto the TDC gene axis:
 
 ```
 bio_context/
-  pyproject.toml        # shared deps (requests, pandas) for all download scripts
+  pyproject.toml        # shared deps for all scripts
+  tdc_gene_index/        # SHARED: which gene sits at each of the 23,808 TDC vector positions
+  _alias/                # SHARED: any gene symbol (incl. legacy) -> stable Entrez id
   <dataset>/
     download_<dataset>.py
+    align_<dataset>_to_tdc.py   # optional: emit a weight matrix on the TDC gene axis
     README.md            # what it is, source, how to (re)download
     data/                 # downloaded output (committed if small; noted in the dataset README if not)
 ```
@@ -29,10 +33,26 @@ bio_context/
   libraries, unless the dataset genuinely needs one.
 - Output is written to `<dataset>/data/` and is safe to delete and re-download at any time.
 
+## Aligning to TDC (shared infrastructure)
+
+TDC's `CellLine[0]` vectors are anonymous floats — no gene labels. [`tdc_gene_index/`](tdc_gene_index/README.md)
+recovers the gene at each of the 23,808 positions (proven bit-for-bit identical to NCI CellMiner's
+**RNA-seq composite** file — note the TDC docs' "5-platform / 25,723 genes" claim is wrong).
+[`_alias/`](_alias) maps any symbol, including legacy ones, to a stable Entrez id so datasets can
+join on Entrez rather than fragile symbols.
+
+Build both once, then run any dataset's `align_*_to_tdc.py`:
+
+```bash
+uv run --project data/bio_context tdc_gene_index/build_tdc_gene_index.py
+uv run --project data/bio_context _alias/build_alias_map.py
+```
+
 ## Datasets
 
 - [`progeny/`](progeny/README.md) — PROGENy pathway-responsive gene weights: 14 signaling
   pathways, 1,295 unique genes, 72 KB. Has statistically-derived per-gene `weight`.
+  **Aligned to TDC: 1,295/1,295 genes (100%)** → `W [14 x 23808]`.
 - [`kegg/`](kegg/README.md) — KEGG gene-to-pathway membership: 372 human pathways (metabolic,
   signaling, disease, etc.), 9,416 unique genes, ~5 MB. No statistical weights — instead
   per-(gene,pathway) structural metrics: `category`, `is_enzyme`, `degree`, `betweenness`,

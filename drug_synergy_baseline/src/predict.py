@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fallback-pickle-path",
         type=str,
-        default="../data_compression/source_data/drugcomb.pkl",
+        default="../data/data_compression/source_data/drugcomb.pkl",
     )
     parser.add_argument(
         "--gene-feature-set",

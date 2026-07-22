@@ -17,7 +17,6 @@ from .dataset import (
     build_datasets,
     build_row_cv_folds,
     load_aligned_synergy_and_expression,
-    split_global_holdout_rows,
 )
 from .macros import DEFAULT_MACRO_FILE, DEFAULT_MACRO_PRESET, load_macro_preset
 from .model import build_baseline_model
@@ -57,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fallback-pickle-path",
         type=str,
-        default="../data_compression/source_data/drugcomb.pkl",
+        default="../data/data_compression/source_data/drugcomb.pkl",
     )
     parser.add_argument("--output-dir", type=str, default="outputs")
     parser.add_argument("--epochs", type=int, default=int(macro_values["epochs"]))
@@ -281,7 +280,6 @@ def train_once(
     }
 
     holdout_dataset = getattr(datasets, "holdout", None)
-    holdout_predictions: list[float] | None = None
     if holdout_dataset is not None:
         holdout_loader = make_loader(holdout_dataset, batch_size=args.batch_size, shuffle=False)
         holdout_predictions, holdout_targets = predict_loader(model, holdout_loader, device)
@@ -298,8 +296,6 @@ def train_once(
                 "holdout_spearman": holdout_spearman,
             }
         )
-        eval_outputs["holdout_predictions"] = holdout_predictions
-        eval_outputs["holdout_targets"] = holdout_targets
         print(
             f"[{run_label}] Holdout MSE: {holdout_mse:.6f} | "
             f"Pearson/Spearman: {holdout_pearson:.4f} / {holdout_spearman:.4f}"
@@ -379,13 +375,6 @@ def train_once(
         print(f"[{run_label}] Saved validation predictions to {val_predictions_path}")
         print(f"[{run_label}] Saved test predictions to {test_predictions_path}")
 
-        if holdout_predictions is not None and datasets.holdout_rows is not None:
-            holdout_predictions_path = output_dir / "holdout_predictions.csv"
-            holdout_predictions_df = datasets.holdout_rows.copy().rename(columns={"target": "y_true"})
-            holdout_predictions_df["y_pred"] = holdout_predictions
-            holdout_predictions_df.to_csv(holdout_predictions_path, index=False)
-            print(f"[{run_label}] Saved holdout predictions to {holdout_predictions_path}")
-
     print(f"[{run_label}] Val baseline MSE: {val_baseline_mse:.6f} | Test baseline MSE: {test_baseline_mse:.6f}")
     print(f"[{run_label}] Val Pearson/Spearman: {val_pearson:.4f} / {val_spearman:.4f}")
     print(f"[{run_label}] Test Pearson/Spearman: {test_pearson:.4f} / {test_spearman:.4f}")
@@ -411,61 +400,8 @@ def run_cross_validation(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    holdout_enabled = args.holdout_test_fraction is not None and args.holdout_test_fraction > 0
-    holdout_info: dict[str, object] | None = None
-    if holdout_enabled:
-        if args.split_strategy == "drug_and_cell_line":
-            pool_df, holdout_df, holdout_groups = split_global_holdout_rows(
-                synergy_df,
-                holdout_fraction=args.holdout_test_fraction,
-                random_seed=args.holdout_seed,
-            )
-            n_drugs_total = len(set(synergy_df["smiles_a"].astype(str)) | set(synergy_df["smiles_b"].astype(str)))
-            n_cells_total = synergy_df["cell_line"].astype(str).nunique()
-            holdout_info = {
-                "holdout_test_fraction": args.holdout_test_fraction,
-                "holdout_seed": args.holdout_seed,
-                "holdout_mode": args.holdout_mode,
-                "num_holdout_drugs": len(holdout_groups["holdout_drugs"]),
-                "num_total_drugs": n_drugs_total,
-                "num_holdout_cell_lines": len(holdout_groups["holdout_cell_lines"]),
-                "num_total_cell_lines": n_cells_total,
-                "holdout_rows": len(holdout_df),
-                "total_rows": len(synergy_df),
-                "realized_row_fraction": len(holdout_df) / len(synergy_df),
-            }
-            save_json(output_dir / "global_holdout_groups.json", {**holdout_info, **holdout_groups})
-            print(
-                f"[cv] Global holdout: reserved {holdout_info['num_holdout_cell_lines']}/{n_cells_total} cell lines "
-                f"and {holdout_info['num_holdout_drugs']}/{n_drugs_total} drugs "
-                f"-> {holdout_info['realized_row_fraction'] * 100:.1f}% of rows "
-                f"({len(holdout_df)}/{len(synergy_df)}), mode={args.holdout_mode}."
-            )
-        else:
-            holdout_rng = np.random.default_rng(args.holdout_seed)
-            shuffled = np.arange(len(synergy_df))
-            holdout_rng.shuffle(shuffled)
-            holdout_count = max(1, int(round(len(synergy_df) * args.holdout_test_fraction)))
-            holdout_count = min(holdout_count, len(synergy_df) - 1)
-            holdout_df = synergy_df.iloc[shuffled[:holdout_count]].reset_index(drop=True)
-            holdout_info = {
-                "holdout_test_fraction": args.holdout_test_fraction,
-                "holdout_seed": args.holdout_seed,
-                "holdout_mode": args.holdout_mode,
-                "holdout_rows": len(holdout_df),
-                "total_rows": len(synergy_df),
-                "realized_row_fraction": len(holdout_df) / len(synergy_df),
-            }
-            save_json(output_dir / "global_holdout_groups.json", holdout_info)
-            print(
-                f"[cv] Global holdout (random rows): reserved {len(holdout_df)}/{len(synergy_df)} rows "
-                f"({holdout_info['realized_row_fraction'] * 100:.1f}%), mode={args.holdout_mode}."
-            )
-        holdout_df.to_csv(output_dir / "global_holdout_test.csv", index=False)
-
     per_fold_metrics: list[dict[str, object]] = []
     all_test_predictions: list[pd.DataFrame] = []
-    all_holdout_predictions: list[pd.DataFrame] = []
 
     observed_fraction = args.train_fraction + args.val_fraction
     if observed_fraction <= 0 or observed_fraction >= 1:
@@ -529,23 +465,6 @@ def run_cross_validation(args: argparse.Namespace) -> None:
             fold_predictions["cv_fold"] = fold_idx + 1
             all_test_predictions.append(fold_predictions)
 
-            # Collect this fold's predictions on the shared holdout for cross-fold
-            # ensembling. In "instead" mode the fold's test set IS the holdout; in
-            # "additional" mode it comes from the separately-scored holdout dataset.
-            if holdout_enabled:
-                if args.holdout_mode == "instead":
-                    holdout_rows = datasets.test_rows
-                    holdout_preds = eval_outputs["test_predictions"]
-                else:
-                    holdout_rows = datasets.holdout_rows
-                    holdout_preds = eval_outputs.get("holdout_predictions")
-                if holdout_rows is not None and holdout_preds is not None:
-                    fold_holdout = holdout_rows.copy().rename(columns={"target": "y_true"})
-                    fold_holdout["y_pred"] = holdout_preds
-                    fold_holdout["cv_seed"] = seed
-                    fold_holdout["cv_fold"] = fold_idx + 1
-                    all_holdout_predictions.append(fold_holdout)
-
     summary_frame = pd.DataFrame(per_fold_metrics)
     metric_columns = ["val_mse", "test_mse", "val_rmse", "test_rmse", "val_pearson", "test_pearson", "val_spearman", "test_spearman"]
     holdout_metric_columns = [
@@ -566,7 +485,8 @@ def run_cross_validation(args: argparse.Namespace) -> None:
         "use_gene_expression": args.use_gene_expression,
         "gene_feature_set": args.gene_feature_set if args.use_gene_expression else None,
         "cell_feature_view": resolve_cell_feature_view(args) if args.use_gene_expression else None,
-        "global_holdout": holdout_info,
+        "holdout_test_fraction": args.holdout_test_fraction,
+        "holdout_mode": args.holdout_mode if args.holdout_test_fraction > 0 else None,
         "aggregate_metrics": {
             metric: {
                 "mean": float(summary_frame[metric].mean()),
@@ -575,47 +495,6 @@ def run_cross_validation(args: argparse.Namespace) -> None:
             for metric in metric_columns + holdout_metric_columns
         },
     }
-
-    # Ensemble the folds' predictions on the shared holdout (only meaningful when
-    # every fold predicts the same rows, which the global holdout guarantees).
-    if all_holdout_predictions:
-        holdout_combined = pd.concat(all_holdout_predictions, ignore_index=True)
-        pivot = holdout_combined.pivot_table(
-            index=["smiles_a", "smiles_b", "cell_line", "y_true"],
-            columns="cv_fold",
-            values="y_pred",
-            aggfunc="mean",
-        )
-        fold_pred_columns = [f"y_pred_fold_{int(col)}" for col in pivot.columns]
-        ensemble_df = pivot.reset_index()
-        ensemble_df.columns = ["smiles_a", "smiles_b", "cell_line", "y_true", *fold_pred_columns]
-        fold_pred_matrix = ensemble_df[fold_pred_columns]
-        ensemble_df["y_pred_mean"] = fold_pred_matrix.mean(axis=1)
-        ensemble_df["y_pred_std"] = fold_pred_matrix.std(axis=1, ddof=0)
-        ensemble_path = output_dir / "cv_holdout_ensemble.csv"
-        ensemble_df.to_csv(ensemble_path, index=False)
-
-        ensemble_targets = ensemble_df["y_true"].tolist()
-        ensemble_preds = ensemble_df["y_pred_mean"].tolist()
-        ensemble_mse = compute_mse(ensemble_preds, ensemble_targets)
-        ensemble_pearson, ensemble_spearman = compute_correlations(ensemble_preds, ensemble_targets)
-        summary["holdout_ensemble_metrics"] = {
-            "holdout_samples": len(ensemble_df),
-            "ensemble_mse": ensemble_mse,
-            "ensemble_rmse": math.sqrt(ensemble_mse),
-            "ensemble_pearson": ensemble_pearson,
-            "ensemble_spearman": ensemble_spearman,
-        }
-
-        ensemble_regression_path = build_regression_figure_path(output_dir, "cv_holdout_ensemble", aggregate=True)
-        save_regression_plot(
-            ensemble_regression_path,
-            targets=ensemble_targets,
-            predictions=ensemble_preds,
-            run_label="cv_holdout_ensemble",
-            mse=ensemble_mse,
-            pearson=ensemble_pearson,
-        )
 
     with open(output_dir / "cv_metrics.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
@@ -641,9 +520,6 @@ def run_cross_validation(args: argparse.Namespace) -> None:
     if all_test_predictions:
         print(f"Saved CV test predictions to {output_dir / 'cv_test_predictions.csv'}")
         print(f"Saved CV test regression plot to {regression_path}")
-    if all_holdout_predictions:
-        print(f"Saved CV holdout ensemble to {output_dir / 'cv_holdout_ensemble.csv'}")
-        print(f"Saved CV holdout ensemble regression plot to {ensemble_regression_path}")
 
 
 def main() -> None:

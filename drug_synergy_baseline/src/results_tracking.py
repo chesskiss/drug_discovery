@@ -37,6 +37,8 @@ CANONICAL_COLUMNS = [
     "test_spearman",
     "test_mean_baseline_mse",
     "improvement_vs_mean_baseline",
+    "holdout_mse",
+    "holdout_pearson",
     "source_metrics_path",
     "notes",
 ]
@@ -339,6 +341,8 @@ def _sync_cv_row(row: dict[str, Any]) -> dict[str, Any]:
     row["test_rmse"] = mean_value("test_rmse")
     row["test_pearson"] = mean_value("test_pearson")
     row["test_spearman"] = mean_value("test_spearman")
+    row["holdout_mse"] = mean_value("holdout_mse")
+    row["holdout_pearson"] = mean_value("holdout_pearson")
     if row["test_mse"] != "":
         row["notes"] = f"{row['notes']} Aggregate metrics reflect the mean across folds."
     return row
@@ -452,6 +456,8 @@ def build_summary(rows: list[dict[str, Any]]) -> pd.DataFrame:
         summary_row["cv10_10k_mse"] = ""
         summary_row["drug_and_cell_line_cv10_10k_mse"] = ""
         summary_row["drug_and_cell_line_cv10_10k_pearson"] = ""
+        summary_row["drug_and_cell_line_cv10_10k_holdout_mse"] = ""
+        summary_row["drug_and_cell_line_cv10_10k_holdout_pearson"] = ""
         if long_row is not None and long_row["model_id"] == model_id:
             summary_row["cv10_10k_mse"] = long_row["test_mse"]
         else:
@@ -484,6 +490,8 @@ def build_summary(rows: list[dict[str, Any]]) -> pd.DataFrame:
         if explicit_combined_long is not None:
             summary_row["drug_and_cell_line_cv10_10k_mse"] = explicit_combined_long["test_mse"]
             summary_row["drug_and_cell_line_cv10_10k_pearson"] = explicit_combined_long["test_pearson"]
+            summary_row["drug_and_cell_line_cv10_10k_holdout_mse"] = explicit_combined_long.get("holdout_mse", "")
+            summary_row["drug_and_cell_line_cv10_10k_holdout_pearson"] = explicit_combined_long.get("holdout_pearson", "")
 
         summary_rows.append(summary_row)
 

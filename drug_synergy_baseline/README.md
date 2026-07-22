@@ -52,6 +52,8 @@ The `deep_synergy_reference` preset is adapted from the DeepSynergy paper, which
 
 Use the canonical experiment tracker in [results/README.md](/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/results/README.md).
 
+[`results/baseline_summary.csv`](/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/results/baseline_summary.csv) — one row per model (`no_genes`, `pca128`) comparing test MSE/Pearson across split strategies and the 10-fold CV runs, including the shared-holdout columns when a run was trained with `--holdout-mode additional`.
+
 Refresh the tables after any run completes:
 
 ```bash

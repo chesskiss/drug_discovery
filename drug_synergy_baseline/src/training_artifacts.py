@@ -89,6 +89,51 @@ def save_loss_curve(path: str | Path, history: list[dict[str, Any]], run_label: 
     plt.close()
 
 
+HIT_SYNERGY_THRESHOLD = 10.0
+HIT_TOP_K_FRACTION = 0.10
+
+
+def compute_top_k_hit_rate(
+    targets: list[float],
+    predictions: list[float],
+    *,
+    hit_threshold: float = HIT_SYNERGY_THRESHOLD,
+    top_k_fraction: float = HIT_TOP_K_FRACTION,
+) -> dict[str, float] | None:
+    """Rank rows by predicted synergy, take the top `top_k_fraction`, and report how
+    many are true hits (`y_true > hit_threshold`).
+
+    Ranking-based on purpose: the baseline's predictions are compressed toward the
+    mean, so a fixed-threshold classification would never fire. Enrichment is the
+    top-K hit rate over the overall hit rate (1.0 == no better than random).
+    """
+    frame = pd.DataFrame({"y_true": targets, "y_pred": predictions}).dropna()
+    if frame.empty:
+        return None
+
+    n_rows = len(frame)
+    k = max(1, int(round(n_rows * top_k_fraction)))
+    is_hit = frame["y_true"] > hit_threshold
+    total_hits = int(is_hit.sum())
+    base_rate = float(is_hit.mean())
+
+    top_k = frame.nlargest(k, "y_pred")
+    hits_in_top_k = int((top_k["y_true"] > hit_threshold).sum())
+    hit_rate = hits_in_top_k / k
+
+    return {
+        "hit_threshold": hit_threshold,
+        "top_k_fraction": top_k_fraction,
+        "k": k,
+        "n_rows": n_rows,
+        "hits_in_top_k": hits_in_top_k,
+        "total_hits": total_hits,
+        "hit_rate": hit_rate,
+        "base_rate": base_rate,
+        "enrichment": hit_rate / base_rate if base_rate > 0 else float("nan"),
+    }
+
+
 def save_regression_plot(
     path: str | Path,
     *,
@@ -138,6 +183,17 @@ def save_regression_plot(
     if stats_bits:
         title_bits.append(" | ".join(stats_bits))
 
+    hit_stats = compute_top_k_hit_rate(frame["y_true"].tolist(), frame["y_pred"].tolist())
+    if hit_stats is not None:
+        top_pct = int(round(hit_stats["top_k_fraction"] * 100))
+        enrichment = hit_stats["enrichment"]
+        enrichment_text = f"{enrichment:.2f}x random" if np.isfinite(enrichment) else "n/a"
+        title_bits.append(
+            f"Top-{top_pct}% hit rate = {hit_stats['hit_rate']:.1%} "
+            f"({hit_stats['hits_in_top_k']}/{hit_stats['k']}) | "
+            f"base = {hit_stats['base_rate']:.1%} | {enrichment_text}"
+        )
+
     plt.figure(figsize=(6.5, 6.5))
     plt.scatter(
         frame["y_true"],
@@ -147,6 +203,26 @@ def save_regression_plot(
         edgecolors="none",
     )
     plt.plot([line_min, line_max], [line_min, line_max], linestyle="--", linewidth=2, color="black")
+
+    # Visualise the top-K hit metric: true hits lie right of the vertical line,
+    # top-K ranked predictions lie above the horizontal one.
+    if hit_stats is not None:
+        top_k_cutoff = float(frame["y_pred"].nlargest(hit_stats["k"]).min())
+        plt.axvline(
+            hit_stats["hit_threshold"],
+            color="#d62728",
+            linestyle=":",
+            linewidth=1.5,
+            label=f"hit: y_true > {hit_stats['hit_threshold']:g}",
+        )
+        plt.axhline(
+            top_k_cutoff,
+            color="#2ca02c",
+            linestyle=":",
+            linewidth=1.5,
+            label=f"top-{int(round(hit_stats['top_k_fraction'] * 100))}% pred cutoff",
+        )
+        plt.legend(loc="lower right", fontsize=8, framealpha=0.85)
     if fit_annotation:
         plt.text(
             0.97,
