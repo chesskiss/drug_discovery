@@ -142,6 +142,55 @@ calls (`link/enzyme/hsa` for `is_enzyme`, `get/br:br08901/json` for `category`).
 - Just the metabolic-pathways map (`map01100`/`hsa01100`) alone is much smaller: 1,587 genes,
   37 KB — use `rest.kegg.jp/link/hsa/path:hsa01100` directly if you only want that one map.
 
+## Alignment to the TDC gene axis
+
+`align_kegg_to_tdc.py` places KEGG's per-(gene, pathway) `importance` onto the 23,808-dim TDC
+NCI-60 gene axis, so a cell line's expression vector `x` (`CellLine[0]`) compresses to a 372-dim
+pathway-activity vector via `z = W @ x`.
+
+```bash
+# prerequisites (build once, shared by all datasets)
+uv run --project data/bio_context tdc_gene_index/build_tdc_gene_index.py
+uv run --project data/bio_context _alias/build_alias_map.py
+
+uv run --project data/bio_context kegg/align_kegg_to_tdc.py
+```
+
+Matching strategy — the **mirror image of PROGENy's**. KEGG's `gene_id` is `hsa:<entrez>`, so
+Entrez is already embedded and the primary join is a direct number match; symbols are only a
+fallback (and KEGG's `gene_symbol` is corrupted for ~625 genes — see below — so we never rely on
+it when Entrez is present):
+1. direct Entrez: `hsa:<entrez>` from `gene_id` matches an Entrez in [`tdc_gene_index`](../tdc_gene_index) → `matched_via=direct`
+2. else KEGG `gene_symbol` == a TDC symbol → `matched_via=symbol`
+3. else KEGG symbol → Entrez via the NCBI [`_alias`](../_alias) map → Entrez match → `matched_via=alias`
+4. else dropped (logged)
+
+**Result: 8,424/9,416 genes matched (89.5%)** — 8,419 by direct Entrez, 5 by symbol, 0 net by
+alias. 372/372 pathways retained. The 992 unmatched are genes whose KEGG Entrez id isn't in
+CellMiner's 23,808-gene panel: non-coding RNAs (rRNA/tRNA), readthrough/fusion transcripts,
+mitochondrially-encoded genes, and newer/uncharacterized ids. At the (gene, pathway) row grain,
+37,880/39,545 rows (95.8%) are matched.
+
+Outputs:
+- `data/kegg_tdc_weights.npz` — `W` `[372 x 23808]` float32 (27,662 nonzero), `pathways`
+  (`path:hsa#####` ids), `pathway_names`, plus `gene_symbol`/`entrez` per column. Note: `W` holds
+  `importance`, which is legitimately `0.0` for degree-0 / edgeless-pathway members, so ~10.2k
+  matched cells land as 0 (populated 37,867, nonzero 27,662) — a zero here means "in the pathway
+  but structurally peripheral", not "absent".
+- `data/kegg_tdc_alignment.csv` — audit trail, one row per source (gene, pathway) pair. Carries
+  **two** symbol columns on purpose: `kegg_gene_symbol` (KEGG's raw, possibly-corrupted label,
+  kept for traceability) and `gene_symbol` (TDC's clean label, looked up via `tdc_idx`), plus
+  `entrez`, `matched_via`, and the structural metrics (`category`, `is_enzyme`, `degree`,
+  `betweenness`, `is_articulation`, `importance`).
+
+The script warns loudly if two genes collide on the same `(pathway, tdc_idx)` with *conflicting*
+`importance` (would silently lose data). For KEGG the only collisions are 26 rows where a paralog
+rescued by symbol lands on a gene already matched directly (e.g. CBS, CRYAA, CCL4L1) — all agree
+on `importance` (KEGG bundles them into one KGML node), so harmless.
+
+Verified end-to-end: `X @ W.T` over all 59 cell lines yields a finite `[59 x 372]` activity matrix
+with real cross-cell-line variation (Metabolic pathways varies most).
+
 ## Other available forms (not used by this script)
 
 - **KGML** (`rest.kegg.jp/get/hsa01100/kgml`, 2.7 MB) — the literal reaction graph (nodes +

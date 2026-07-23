@@ -57,4 +57,5 @@ uv run --project data/bio_context _alias/build_alias_map.py
   signaling, disease, etc.), 9,416 unique genes, ~5 MB. No statistical weights — instead
   per-(gene,pathway) structural metrics: `category`, `is_enzyme`, `degree`, `betweenness`,
   `is_articulation`, and a combined `importance` (see dataset README for caveats).
+  **Aligned to TDC: 8,424/9,416 genes (89.5%)** → `W [372 x 23808]` (`importance`-weighted).
 
