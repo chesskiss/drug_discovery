@@ -89,48 +89,97 @@ def save_loss_curve(path: str | Path, history: list[dict[str, Any]], run_label: 
     plt.close()
 
 
-HIT_SYNERGY_THRESHOLD = 10.0
-HIT_TOP_K_FRACTION = 0.10
+# Synergy_ZIP bucket edges, anchored at the biological zero (ZIP == 0 means "no
+# interaction / additive"; positive == synergy, negative == antagonism).
+#
+# Derivation (objective, reproducible — see notebook analysis):
+#   * GMM/BIC + KDE show the label distribution is UNIMODAL with fat tails, so there is
+#     no data-intrinsic valley to split on; a threshold must be defined against the
+#     "no interaction" null (ZIP == 0), not discovered from modality.
+#   * The additive core's dispersion is estimated robustly with the MAD (resistant to
+#     the synergy/antagonism tails): sigma_robust = 1.4826 * MAD ~= 4.04.
+#   * Bucket edges are significance bounds of that null: |z| * sigma_robust.
+#       mild   = 1.960 * sigma_robust ~= 7.9   (95% two-sided bound)
+#       strong = 2.576 * sigma_robust ~= 10.4  (99% bound; ~= SynergyFinder's ZIP>10)
+# Fixed constants (not recomputed per run) so buckets stay comparable across folds,
+# runs, and models.
+SYNERGY_ADDITIVE_BAND = 7.9
+SYNERGY_STRONG_THRESHOLD = 10.4
+
+# Ordinal synergy classes, from strongest antagonism (-2) to strongest synergy (+2).
+SYNERGY_BUCKET_LABELS = {
+    -2: "strong antagonism",
+    -1: "mild antagonism",
+    0: "additive",
+    1: "mild synergy",
+    2: "strong synergy",
+}
 
 
-def compute_top_k_hit_rate(
+def assign_synergy_bucket(
+    values: "np.ndarray | list[float]",
+    *,
+    additive_band: float = SYNERGY_ADDITIVE_BAND,
+    strong_threshold: float = SYNERGY_STRONG_THRESHOLD,
+) -> np.ndarray:
+    """Map continuous synergy scores onto the 5 ordinal classes in ``SYNERGY_BUCKET_LABELS``."""
+    v = np.asarray(values, dtype=float)
+    bucket = np.zeros(len(v), dtype=int)
+    bucket[v > additive_band] = 1
+    bucket[v > strong_threshold] = 2
+    bucket[v < -additive_band] = -1
+    bucket[v < -strong_threshold] = -2
+    return bucket
+
+
+def compute_synergy_bucket_metrics(
     targets: list[float],
     predictions: list[float],
     *,
-    hit_threshold: float = HIT_SYNERGY_THRESHOLD,
-    top_k_fraction: float = HIT_TOP_K_FRACTION,
-) -> dict[str, float] | None:
-    """Rank rows by predicted synergy, take the top `top_k_fraction`, and report how
-    many are true hits (`y_true > hit_threshold`).
+    additive_band: float = SYNERGY_ADDITIVE_BAND,
+    strong_threshold: float = SYNERGY_STRONG_THRESHOLD,
+) -> dict[str, Any] | None:
+    """Discretise true and predicted synergy into 5 ordinal classes and score agreement.
 
-    Ranking-based on purpose: the baseline's predictions are compressed toward the
-    mean, so a fixed-threshold classification would never fire. Enrichment is the
-    top-K hit rate over the overall hit rate (1.0 == no better than random).
+    Reports exact-bucket accuracy (predicted class == true class) and within-1-bucket
+    accuracy (off by at most one ordinal step). Per-bucket, it also records the mean
+    predicted score, which reveals ordinal signal even when the regression is
+    miscalibrated (a well-ordered model has monotonically increasing mean prediction
+    from the antagonism buckets to the synergy buckets).
     """
     frame = pd.DataFrame({"y_true": targets, "y_pred": predictions}).dropna()
     if frame.empty:
         return None
 
-    n_rows = len(frame)
-    k = max(1, int(round(n_rows * top_k_fraction)))
-    is_hit = frame["y_true"] > hit_threshold
-    total_hits = int(is_hit.sum())
-    base_rate = float(is_hit.mean())
+    true_bucket = assign_synergy_bucket(
+        frame["y_true"].to_numpy(), additive_band=additive_band, strong_threshold=strong_threshold
+    )
+    pred_bucket = assign_synergy_bucket(
+        frame["y_pred"].to_numpy(), additive_band=additive_band, strong_threshold=strong_threshold
+    )
 
-    top_k = frame.nlargest(k, "y_pred")
-    hits_in_top_k = int((top_k["y_true"] > hit_threshold).sum())
-    hit_rate = hits_in_top_k / k
+    exact_accuracy = float(np.mean(true_bucket == pred_bucket))
+    within_one_accuracy = float(np.mean(np.abs(true_bucket - pred_bucket) <= 1))
+
+    per_bucket: dict[int, dict[str, float]] = {}
+    for code in SYNERGY_BUCKET_LABELS:
+        mask = true_bucket == code
+        count = int(mask.sum())
+        per_bucket[code] = {
+            "label": SYNERGY_BUCKET_LABELS[code],
+            "count": count,
+            "fraction": float(mask.mean()),
+            "recall": float(np.mean(pred_bucket[mask] == code)) if count else float("nan"),
+            "mean_pred": float(frame["y_pred"].to_numpy()[mask].mean()) if count else float("nan"),
+        }
 
     return {
-        "hit_threshold": hit_threshold,
-        "top_k_fraction": top_k_fraction,
-        "k": k,
-        "n_rows": n_rows,
-        "hits_in_top_k": hits_in_top_k,
-        "total_hits": total_hits,
-        "hit_rate": hit_rate,
-        "base_rate": base_rate,
-        "enrichment": hit_rate / base_rate if base_rate > 0 else float("nan"),
+        "additive_band": additive_band,
+        "strong_threshold": strong_threshold,
+        "n_rows": len(frame),
+        "exact_accuracy": exact_accuracy,
+        "within_one_accuracy": within_one_accuracy,
+        "per_bucket": per_bucket,
     }
 
 
@@ -183,15 +232,12 @@ def save_regression_plot(
     if stats_bits:
         title_bits.append(" | ".join(stats_bits))
 
-    hit_stats = compute_top_k_hit_rate(frame["y_true"].tolist(), frame["y_pred"].tolist())
-    if hit_stats is not None:
-        top_pct = int(round(hit_stats["top_k_fraction"] * 100))
-        enrichment = hit_stats["enrichment"]
-        enrichment_text = f"{enrichment:.2f}x random" if np.isfinite(enrichment) else "n/a"
+    bucket_stats = compute_synergy_bucket_metrics(frame["y_true"].tolist(), frame["y_pred"].tolist())
+    if bucket_stats is not None:
         title_bits.append(
-            f"Top-{top_pct}% hit rate = {hit_stats['hit_rate']:.1%} "
-            f"({hit_stats['hits_in_top_k']}/{hit_stats['k']}) | "
-            f"base = {hit_stats['base_rate']:.1%} | {enrichment_text}"
+            f"5-bucket acc = {bucket_stats['exact_accuracy']:.1%} | "
+            f"within ±1 = {bucket_stats['within_one_accuracy']:.1%} "
+            f"(bands ±{bucket_stats['additive_band']:g} / ±{bucket_stats['strong_threshold']:g})"
         )
 
     plt.figure(figsize=(6.5, 6.5))
@@ -204,24 +250,33 @@ def save_regression_plot(
     )
     plt.plot([line_min, line_max], [line_min, line_max], linestyle="--", linewidth=2, color="black")
 
-    # Visualise the top-K hit metric: true hits lie right of the vertical line,
-    # top-K ranked predictions lie above the horizontal one.
-    if hit_stats is not None:
-        top_k_cutoff = float(frame["y_pred"].nlargest(hit_stats["k"]).min())
-        plt.axvline(
-            hit_stats["hit_threshold"],
-            color="#d62728",
-            linestyle=":",
-            linewidth=1.5,
-            label=f"hit: y_true > {hit_stats['hit_threshold']:g}",
-        )
-        plt.axhline(
-            top_k_cutoff,
-            color="#2ca02c",
-            linestyle=":",
-            linewidth=1.5,
-            label=f"top-{int(round(hit_stats['top_k_fraction'] * 100))}% pred cutoff",
-        )
+    # Visualise the 5 ordinal synergy classes: the additive band (+/- additive_band)
+    # and the strong tails (+/- strong_threshold), applied to BOTH axes so the
+    # matching diagonal cells are the exact-bucket agreements.
+    if bucket_stats is not None:
+        band = bucket_stats["additive_band"]
+        strong = bucket_stats["strong_threshold"]
+        for idx, edge in enumerate((-strong, -band, band, strong)):
+            zone_label = "synergy bucket edges" if idx == 0 else None
+            plt.axvline(edge, color="#9467bd", linestyle=":", linewidth=1.1, alpha=0.7, label=zone_label)
+            plt.axhline(edge, color="#9467bd", linestyle=":", linewidth=1.1, alpha=0.7)
+        # Name the 5 true-synergy zones along the top of the plot. The middle bands are
+        # narrow, so stagger the labels across two heights to avoid overlap.
+        edges = [line_min, -strong, -band, band, strong, line_max]
+        names = ["str.antag", "mild antag", "additive", "mild syn", "str.syn"]
+        span = line_max - line_min
+        for idx, (lo, hi, name) in enumerate(zip(edges[:-1], edges[1:], names)):
+            y_offset = 0.03 if idx % 2 == 0 else 0.075
+            plt.text(
+                (lo + hi) / 2,
+                line_max - span * y_offset,
+                name,
+                ha="center",
+                va="top",
+                fontsize=7,
+                color="#6a3d9a",
+                alpha=0.85,
+            )
         plt.legend(loc="lower right", fontsize=8, framealpha=0.85)
     if fit_annotation:
         plt.text(
