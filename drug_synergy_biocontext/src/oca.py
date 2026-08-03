@@ -1,0 +1,457 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Any
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+
+from .dataset import build_cv_dataset_bundle, build_datasets, load_aligned_synergy_and_expression, smiles_to_vector
+from .oca_plots import plot_component_importance_head_tail_summary, plot_component_importance_topk
+from .bio_context import load_bio_context_matrix
+from .predict import get_device, load_config, load_model
+from .training_artifacts import save_json
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run component-level occlusion attribution on a saved baseline checkpoint."
+    )
+    parser.add_argument("--model-path", type=str, required=True, help="Path to baseline_mlp.pt.")
+    parser.add_argument("--config-path", type=str, required=True, help="Path to the matching config.json.")
+    parser.add_argument("--synergy-path", type=str, default=None, help="Optional override for the synergy CSV.")
+    parser.add_argument(
+        "--fallback-pickle-path",
+        type=str,
+        default=None,
+        help="Optional override for the fallback pickle path.",
+    )
+    parser.add_argument(
+        "--split-strategy",
+        type=str,
+        default=None,
+        help="Optional override for the split strategy saved in config.",
+    )
+    parser.add_argument(
+        "--bio-context",
+        choices=("progeny", "kegg", "progeny_kegg"),
+        default=None,
+        help="Optional override for the bio-context matrix (defaults to the trained config).",
+    )
+    parser.add_argument("--max-samples", type=int, default=None, help="Optional sample cap override.")
+    parser.add_argument("--top-k", type=int, default=10, help="How many top components to plot.")
+    parser.add_argument(
+        "--local-row-idx",
+        type=int,
+        action="append",
+        default=None,
+        help="Explicit test-row indices for local explanations. Repeatable.",
+    )
+    parser.add_argument(
+        "--local-top-n",
+        type=int,
+        default=5,
+        help="How many rows to pick from each default local slice when explicit indices are not provided.",
+    )
+    parser.add_argument("--mask-value", type=float, default=0.0, help="Replacement value for masked components.")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batch size used during attribution forward passes. Defaults to config batch size.",
+    )
+    parser.add_argument("--device", type=str, default=None, help="Optional device override.")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Where to write OCA artifacts. Defaults to <run>/oca.",
+    )
+    return parser.parse_args()
+
+
+def _resolve_path_value(override: str | None, config: dict[str, object], key: str) -> str | None:
+    if override is not None:
+        return override
+    value = config.get(key)
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def resolve_bio_context(
+    *,
+    config: dict[str, object],
+    bio_context_override: str | None = None,
+) -> str:
+    if bio_context_override is not None:
+        return str(bio_context_override)
+    return str(config.get("bio_context") or "progeny")
+
+
+def get_pathway_names(config: dict[str, object], bio_context_override: str | None = None) -> list[str]:
+    """Human-readable component labels: real pathway names instead of PCA indices."""
+    _weights, names = load_bio_context_matrix(resolve_bio_context(config=config, bio_context_override=bio_context_override))
+    return names
+
+
+def build_test_bundle_from_config(
+    config: dict[str, object],
+    *,
+    synergy_path_override: str | None = None,
+    fallback_pickle_path_override: str | None = None,
+    split_strategy_override: str | None = None,
+    bio_context_override: str | None = None,
+    max_samples_override: int | None = None,
+) -> tuple[Any, dict[str, object]]:
+    synergy_path = _resolve_path_value(synergy_path_override, config, "synergy_path")
+    if synergy_path is None:
+        raise ValueError("No synergy path available. Pass --synergy-path or use a config with synergy_path.")
+
+    use_gene_expression = bool(config.get("use_gene_expression", True))
+    fallback_pickle_path = _resolve_path_value(fallback_pickle_path_override, config, "fallback_pickle_path")
+    split_strategy = split_strategy_override or str(config.get("split_strategy", "random"))
+    train_fraction = float(config.get("train_fraction", 0.8))
+    val_fraction = float(config.get("val_fraction", 0.1))
+    random_seed = int(config.get("seed", 42))
+    smiles_dim = int(config.get("drug_dim", 256))
+    max_samples = max_samples_override if max_samples_override is not None else config.get("max_samples")
+    hidden_dims = config.get("hidden_dims")
+    dropout = float(config.get("dropout", 0.2))
+
+    bio_context = resolve_bio_context(config=config, bio_context_override=bio_context_override)
+    normalize_pathways = str(config.get("normalize_pathways", "zscore"))
+    synergy_df, expression_lookup, gene_dim = load_aligned_synergy_and_expression(
+        synergy_path=synergy_path,
+        fallback_pickle_path=fallback_pickle_path,
+        bio_context=bio_context,
+        use_gene_expression=use_gene_expression,
+        max_samples=int(max_samples) if max_samples is not None else None,
+    )
+
+    if config.get("evaluation_mode") == "cross_validation":
+        datasets = build_cv_dataset_bundle(
+            synergy_df,
+            expression_lookup,
+            gene_dim=gene_dim,
+            smiles_dim=smiles_dim,
+            split_strategy=split_strategy,
+            num_folds=int(config["cv_folds"]),
+            seed=int(config["cv_seed"]),
+            fold_idx=int(config["cv_fold"]) - 1,
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+            stratified=bool(config.get("stratified_cv", False)),
+            holdout_fraction=float(config.get("holdout_test_fraction", 0.0)),
+            holdout_seed=int(config.get("holdout_seed", 42)),
+            holdout_mode=str(config.get("holdout_mode", "instead")),
+            normalize_pathways=normalize_pathways,
+        )
+    else:
+        datasets = build_datasets(
+            synergy_path=synergy_path,
+            fallback_pickle_path=fallback_pickle_path,
+            use_gene_expression=use_gene_expression,
+            bio_context=bio_context,
+            split_strategy=split_strategy,
+            smiles_dim=smiles_dim,
+            train_fraction=train_fraction,
+            val_fraction=val_fraction,
+            random_seed=random_seed,
+            max_samples=int(max_samples) if max_samples is not None else None,
+            normalize_pathways=normalize_pathways,
+        )
+    return datasets, {
+        "synergy_path": synergy_path,
+        "bio_context": bio_context,
+        "fallback_pickle_path": fallback_pickle_path,
+        "split_strategy": split_strategy,
+        "train_fraction": train_fraction,
+        "val_fraction": val_fraction,
+        "random_seed": random_seed,
+        "smiles_dim": smiles_dim,
+        "max_samples": max_samples,
+        "hidden_dims": hidden_dims,
+        "dropout": dropout,
+        "bio_context": bio_context,
+        "use_gene_expression": use_gene_expression,
+    }
+
+
+def _build_test_bundle(args: argparse.Namespace, config: dict[str, object]):
+    return build_test_bundle_from_config(
+        config,
+        synergy_path_override=args.synergy_path,
+        fallback_pickle_path_override=args.fallback_pickle_path,
+        split_strategy_override=args.split_strategy,
+        bio_context_override=args.bio_context,
+        max_samples_override=args.max_samples,
+    )
+
+
+def _build_test_arrays(test_rows: pd.DataFrame, expression_lookup: dict[str, np.ndarray], smiles_dim: int):
+    drug_a = np.stack([smiles_to_vector(smiles, dim=smiles_dim) for smiles in test_rows["smiles_a"]]).astype(np.float32)
+    drug_b = np.stack([smiles_to_vector(smiles, dim=smiles_dim) for smiles in test_rows["smiles_b"]]).astype(np.float32)
+    gene_expr = np.stack([expression_lookup[str(cell_line)] for cell_line in test_rows["cell_line"]]).astype(np.float32)
+    targets = test_rows["target"].to_numpy(dtype=np.float32)
+    return drug_a, drug_b, gene_expr, targets
+
+
+def _predict_arrays(
+    model: torch.nn.Module,
+    *,
+    drug_a: np.ndarray,
+    drug_b: np.ndarray,
+    gene_expr: np.ndarray,
+    batch_size: int,
+    device: torch.device,
+) -> np.ndarray:
+    outputs: list[np.ndarray] = []
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, len(drug_a), batch_size):
+            end = start + batch_size
+            batch_drug_a = torch.from_numpy(drug_a[start:end]).to(device=device, dtype=torch.float32)
+            batch_drug_b = torch.from_numpy(drug_b[start:end]).to(device=device, dtype=torch.float32)
+            batch_gene_expr = torch.from_numpy(gene_expr[start:end]).to(device=device, dtype=torch.float32)
+            predictions = model(batch_drug_a, batch_drug_b, batch_gene_expr).detach().cpu().numpy()
+            outputs.append(predictions.astype(np.float32))
+    return np.concatenate(outputs, axis=0)
+
+
+def _select_local_row_indices(
+    test_rows: pd.DataFrame,
+    base_predictions: np.ndarray,
+    local_top_n: int,
+    explicit_indices: list[int] | None,
+) -> list[int]:
+    if explicit_indices:
+        return sorted({idx for idx in explicit_indices if 0 <= idx < len(test_rows)})
+
+    targets = test_rows["target"].to_numpy(dtype=np.float32)
+    residuals = np.abs(base_predictions - targets)
+
+    high_target = np.argsort(targets)[-local_top_n:]
+    low_target = np.argsort(targets)[:local_top_n]
+    high_residual = np.argsort(residuals)[-local_top_n:]
+
+    selected = sorted(set(high_target.tolist()) | set(low_target.tolist()) | set(high_residual.tolist()))
+    return selected
+
+
+def _plot_local_heatmap(
+    local_df: pd.DataFrame,
+    component_importance: pd.DataFrame,
+    output_path: Path,
+    top_k: int,
+) -> None:
+    if local_df.empty:
+        return
+
+    top_components = component_importance.nsmallest(top_k, "rank")["component_idx"].tolist()
+    heatmap_df = local_df[local_df["component_idx"].isin(top_components)].copy()
+    if heatmap_df.empty:
+        return
+
+    heatmap_df["sample_label"] = heatmap_df.apply(
+        lambda row: f"{int(row['test_row_idx'])}:{row['cell_line']}",
+        axis=1,
+    )
+    pivot = heatmap_df.pivot_table(
+        index="sample_label",
+        columns="component_idx",
+        values="delta_squared_error",
+        aggfunc="mean",
+    ).reindex(columns=top_components, fill_value=0.0)
+
+    fig, ax = plt.subplots(figsize=(max(8, len(top_components) * 0.8), max(4, len(pivot) * 0.45)))
+    image = ax.imshow(pivot.to_numpy(dtype=np.float32), aspect="auto", cmap="viridis")
+    ax.set_title("OCA Local Delta Squared Error Heatmap")
+    ax.set_xlabel("Pathway")
+    ax.set_ylabel("Selected Test Rows")
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([f"C{int(col)}" for col in pivot.columns], rotation=45, ha="right")
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels(pivot.index.tolist())
+    fig.colorbar(image, ax=ax, label="Delta Squared Error")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def run_oca_analysis(
+    *,
+    model: torch.nn.Module,
+    model_path: Path,
+    config_path: Path,
+    config: dict[str, object],
+    datasets,
+    resolved: dict[str, object],
+    output_dir: Path,
+    batch_size: int,
+    device: torch.device,
+    top_k: int,
+    local_top_n: int,
+    local_row_idx: list[int] | None,
+    mask_value: float,
+    progress_prefix: str = "oca",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not resolved["use_gene_expression"] or datasets.gene_dim <= 0:
+        raise ValueError("OCA requires a gene-enabled checkpoint with a positive gene dimension.")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    test_rows = datasets.test_rows.copy().reset_index(drop=True)
+    expression_lookup = datasets.test.expression_lookup
+    drug_a, drug_b, gene_expr, targets = _build_test_arrays(test_rows, expression_lookup, datasets.drug_dim)
+    base_predictions = _predict_arrays(
+        model,
+        drug_a=drug_a,
+        drug_b=drug_b,
+        gene_expr=gene_expr,
+        batch_size=batch_size,
+        device=device,
+    )
+    base_squared_error = np.square(base_predictions - targets)
+    base_absolute_error = np.abs(base_predictions - targets)
+    local_indices = _select_local_row_indices(test_rows, base_predictions, local_top_n, local_row_idx)
+
+    component_records: list[dict[str, float | int]] = []
+    local_records: list[dict[str, object]] = []
+    progress_step = max(1, datasets.gene_dim // 10)
+
+    for component_idx in range(datasets.gene_dim):
+        if component_idx % progress_step == 0 or component_idx == datasets.gene_dim - 1:
+            print(f"[{progress_prefix}] component {component_idx + 1}/{datasets.gene_dim}")
+
+        masked_gene_expr = gene_expr.copy()
+        masked_gene_expr[:, component_idx] = np.float32(mask_value)
+        masked_predictions = _predict_arrays(
+            model,
+            drug_a=drug_a,
+            drug_b=drug_b,
+            gene_expr=masked_gene_expr,
+            batch_size=batch_size,
+            device=device,
+        )
+        masked_squared_error = np.square(masked_predictions - targets)
+        masked_absolute_error = np.abs(masked_predictions - targets)
+        delta_prediction = masked_predictions - base_predictions
+        delta_squared_error = masked_squared_error - base_squared_error
+        delta_absolute_error = masked_absolute_error - base_absolute_error
+
+        component_records.append(
+            {
+                "component_idx": component_idx,
+                "mean_abs_delta_prediction": float(np.mean(np.abs(delta_prediction))),
+                "mean_delta_squared_error": float(np.mean(delta_squared_error)),
+                "mean_delta_absolute_error": float(np.mean(delta_absolute_error)),
+            }
+        )
+
+        for row_idx in local_indices:
+            row = test_rows.iloc[row_idx]
+            local_records.append(
+                {
+                    "test_row_idx": row_idx,
+                    "smiles_a": row["smiles_a"],
+                    "smiles_b": row["smiles_b"],
+                    "cell_line": row["cell_line"],
+                    "component_idx": component_idx,
+                    "y_true": float(targets[row_idx]),
+                    "y_pred_base": float(base_predictions[row_idx]),
+                    "y_pred_masked": float(masked_predictions[row_idx]),
+                    "delta_prediction": float(delta_prediction[row_idx]),
+                    "delta_squared_error": float(delta_squared_error[row_idx]),
+                    "delta_absolute_error": float(delta_absolute_error[row_idx]),
+                }
+            )
+
+    component_importance_df = pd.DataFrame(component_records).sort_values(
+        by=["mean_delta_squared_error", "mean_abs_delta_prediction", "component_idx"],
+        ascending=[False, False, True],
+    )
+    component_importance_df["rank"] = np.arange(1, len(component_importance_df) + 1)
+    component_importance_df = component_importance_df[
+        [
+            "component_idx",
+            "mean_abs_delta_prediction",
+            "mean_delta_squared_error",
+            "mean_delta_absolute_error",
+            "rank",
+        ]
+    ]
+    local_explanations_df = pd.DataFrame(local_records)
+
+    component_path = output_dir / "component_importance.csv"
+    local_path = output_dir / "local_explanations.csv"
+    global_plot_path = output_dir / "component_importance_topk.png"
+    summary_plot_path = output_dir / "component_importance_head_tail_summary.png"
+    heatmap_path = output_dir / "local_explanations_heatmap.png"
+    summary_path = output_dir / "oca_summary.json"
+
+    component_importance_df.to_csv(component_path, index=False)
+    local_explanations_df.to_csv(local_path, index=False)
+    plot_component_importance_topk(component_importance_df, global_plot_path, top_k)
+    plot_component_importance_head_tail_summary(component_importance_df, summary_plot_path)
+    _plot_local_heatmap(local_explanations_df, component_importance_df, heatmap_path, top_k)
+    save_json(
+        summary_path,
+        {
+            "model_path": str(model_path),
+            "config_path": str(config_path),
+            "output_dir": str(output_dir),
+            "gene_dim": int(datasets.gene_dim),
+            "drug_dim": int(datasets.drug_dim),
+            "test_rows": int(len(test_rows)),
+            "mask_value": float(mask_value),
+            "top_k": int(top_k),
+            "local_row_indices": local_indices,
+            "resolved": resolved,
+            "evaluation_mode": config.get("evaluation_mode", "single_split"),
+        },
+    )
+
+    print(f"[{progress_prefix}] Saved component importance to {component_path}")
+    print(f"[{progress_prefix}] Saved local explanations to {local_path}")
+    print(f"[{progress_prefix}] Saved global importance plot to {global_plot_path}")
+    print(f"[{progress_prefix}] Saved head/tail summary plot to {summary_plot_path}")
+    print(f"[{progress_prefix}] Saved local heatmap to {heatmap_path}")
+    print(f"[{progress_prefix}] Saved summary to {summary_path}")
+    return component_importance_df, local_explanations_df
+
+
+def main() -> None:
+    args = parse_args()
+    config = load_config(Path(args.config_path))
+    datasets, resolved = _build_test_bundle(args, config)
+
+    model_path = Path(args.model_path)
+    output_dir = Path(args.output_dir) if args.output_dir else model_path.parent / "oca"
+
+    device = get_device(args.device)
+    batch_size = int(args.batch_size or config.get("batch_size", 256))
+    model = load_model(config, model_path, device)
+    run_oca_analysis(
+        model=model,
+        model_path=model_path,
+        config_path=Path(args.config_path),
+        config=config,
+        datasets=datasets,
+        resolved=resolved,
+        output_dir=output_dir,
+        batch_size=batch_size,
+        device=device,
+        top_k=args.top_k,
+        local_top_n=args.local_top_n,
+        local_row_idx=args.local_row_idx,
+        mask_value=args.mask_value,
+        progress_prefix="oca",
+    )
+
+
+if __name__ == "__main__":
+    main()

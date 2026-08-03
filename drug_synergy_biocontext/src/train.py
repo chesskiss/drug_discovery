@@ -19,7 +19,7 @@ from .dataset import (
     load_aligned_synergy_and_expression,
 )
 from .macros import DEFAULT_MACRO_FILE, DEFAULT_MACRO_PRESET, load_macro_preset
-from .model import build_baseline_model
+from .model import build_biocontext_model
 from .training_artifacts import (
     build_curve_figure_path,
     build_regression_figure_path,
@@ -30,11 +30,7 @@ from .training_artifacts import (
 )
 
 
-GENE_FEATURE_SET_TO_VIEW = {
-    "raw": 0,
-    "filtered": 1,
-    "compact": 2,
-}
+BIO_CONTEXT_CHOICES = ["progeny", "kegg", "progeny_kegg"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,12 +47,17 @@ def parse_args() -> argparse.Namespace:
         description="Train and evaluate a minimal DeepSynergy-style baseline on DrugComb/TDC data",
         parents=[macro_parser],
     )
-    parser.add_argument("--synergy-path", type=str, default="data/drugcomb.csv")
-    parser.add_argument("--cell-expression-path", type=str, default=None)
+    parser.add_argument(
+        "--synergy-path",
+        type=str,
+        default="../data/data_compression/source_data/drugcomb.pkl",
+        help="Synergy table. The raw pickle carries both the synergy rows and CellLine[0].",
+    )
     parser.add_argument(
         "--fallback-pickle-path",
         type=str,
         default="../data/data_compression/source_data/drugcomb.pkl",
+        help="Source of the raw 23808-dim CellLine[0] vectors the bio-context matrix projects.",
     )
     parser.add_argument("--output-dir", type=str, default="outputs")
     parser.add_argument("--epochs", type=int, default=int(macro_values["epochs"]))
@@ -76,12 +77,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--use-gene-expression", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
-        "--gene-feature-set",
-        choices=sorted(GENE_FEATURE_SET_TO_VIEW),
-        default=None,
-        help="Named CellLine view: raw=23808, filtered=3171, compact=627",
+        "--bio-context",
+        choices=BIO_CONTEXT_CHOICES,
+        default="progeny",
+        help="Fixed pathway matrix projecting CellLine[0]: progeny=14, kegg=336, progeny_kegg=350 dims.",
     )
-    parser.add_argument("--cell-feature-view", type=int, default=0, help="Fallback-pickle CellLine view: 0=23808, 1=3171, 2=627")
+    parser.add_argument(
+        "--mlp0-out-dim",
+        type=int,
+        default=8,
+        help="Output width of MLP0, the trainable pathway compression head. 0 disables the cell-line branch.",
+    )
+    parser.add_argument(
+        "--normalize-pathways",
+        choices=["zscore", "none"],
+        default="zscore",
+        help="Z-score pathway activities using TRAIN cell lines only. Raw activities are ~1e4x the drug features.",
+    )
     parser.add_argument("--cv-folds", type=int, default=1)
     parser.add_argument("--cv-seeds", type=int, nargs="*", default=None)
     parser.add_argument("--stratified-cv", action="store_true")
@@ -109,10 +121,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_cell_feature_view(args: argparse.Namespace) -> int:
-    if args.gene_feature_set is not None:
-        return GENE_FEATURE_SET_TO_VIEW[args.gene_feature_set]
-    return args.cell_feature_view
+def resolve_mlp0_out_dim(args: argparse.Namespace) -> int:
+    """Effective MLP0 width. Disabling gene expression forces the branch off."""
+    if not args.use_gene_expression:
+        return 0
+    return max(0, int(args.mlp0_out_dim))
 
 
 def make_loader(dataset, batch_size: int, shuffle: bool) -> DataLoader:
@@ -205,9 +218,11 @@ def train_once(
     torch.manual_seed(run_seed)
 
     device = get_device()
-    model = build_baseline_model(
+    mlp0_out_dim = resolve_mlp0_out_dim(args)
+    model = build_biocontext_model(
         drug_dim=datasets.drug_dim,
-        gene_dim=datasets.gene_dim,
+        pathway_dim=datasets.gene_dim,
+        mlp0_out_dim=mlp0_out_dim,
         hidden_dims=tuple(args.hidden_dims),
         dropout=args.dropout,
     ).to(device)
@@ -223,7 +238,7 @@ def train_once(
     print(f"[{run_label}] Val samples: {len(datasets.val)}")
     print(f"[{run_label}] Test samples: {len(datasets.test)}")
     print(f"[{run_label}] Drug feature dim: {datasets.drug_dim}")
-    print(f"[{run_label}] Gene expression dim: {datasets.gene_dim}")
+    print(f"[{run_label}] Pathway dim: {datasets.gene_dim} | MLP0 out dim: {mlp0_out_dim}")
     print(f"[{run_label}] Device: {device}")
 
     history: list[dict[str, float]] = []
@@ -251,8 +266,10 @@ def train_once(
         "seed": run_seed,
         "split_strategy": args.split_strategy,
         "use_gene_expression": args.use_gene_expression,
-        "gene_feature_set": args.gene_feature_set if args.use_gene_expression else None,
-        "cell_feature_view": resolve_cell_feature_view(args) if args.use_gene_expression else None,
+        "bio_context": args.bio_context if args.use_gene_expression else None,
+        "pathway_dim": datasets.gene_dim,
+        "mlp0_out_dim": mlp0_out_dim,
+        "normalize_pathways": args.normalize_pathways,
         "train_samples": len(datasets.train),
         "val_samples": len(datasets.val),
         "test_samples": len(datasets.test),
@@ -312,7 +329,6 @@ def train_once(
         config_payload = {
             "model_type": "DeepSynergyMLP",
             "synergy_path": args.synergy_path,
-            "cell_expression_path": args.cell_expression_path,
             "fallback_pickle_path": args.fallback_pickle_path,
             "macro_file": args.macro_file,
             "macro_preset": args.macro_preset,
@@ -329,10 +345,11 @@ def train_once(
             "val_fraction": args.val_fraction,
             "max_samples": args.max_samples,
             "use_gene_expression": args.use_gene_expression,
-            "gene_feature_set": args.gene_feature_set if args.use_gene_expression else None,
-            "cell_feature_view": resolve_cell_feature_view(args) if args.use_gene_expression else None,
-            "cell_encoder_type": "identity",
-            "cell_latent_dim": datasets.gene_dim,
+            "bio_context": args.bio_context if args.use_gene_expression else None,
+            "pathway_dim": datasets.gene_dim,
+            "mlp0_out_dim": mlp0_out_dim,
+            "normalize_pathways": args.normalize_pathways,
+            "cell_encoder_type": "bio_context_mlp0",
         }
         if extra_config:
             config_payload.update(extra_config)
@@ -393,9 +410,8 @@ def run_cross_validation(args: argparse.Namespace) -> None:
     cv_seeds = args.cv_seeds or [args.seed]
     synergy_df, expression_lookup, gene_dim = load_aligned_synergy_and_expression(
         synergy_path=args.synergy_path,
-        cell_expression_path=args.cell_expression_path,
         fallback_pickle_path=args.fallback_pickle_path,
-        cell_feature_view=resolve_cell_feature_view(args),
+        bio_context=args.bio_context,
         use_gene_expression=args.use_gene_expression,
         max_samples=args.max_samples,
     )
@@ -435,6 +451,7 @@ def run_cross_validation(args: argparse.Namespace) -> None:
                 holdout_fraction=args.holdout_test_fraction,
                 holdout_seed=args.holdout_seed,
                 holdout_mode=args.holdout_mode,
+                normalize_pathways=args.normalize_pathways,
             )
             run_label = f"cv_seed_{seed}_fold_{fold_idx + 1}"
             fold_output_dir = output_dir / "fold_runs" / run_label
@@ -486,8 +503,10 @@ def run_cross_validation(args: argparse.Namespace) -> None:
         "macro_file": args.macro_file,
         "macro_preset": args.macro_preset,
         "use_gene_expression": args.use_gene_expression,
-        "gene_feature_set": args.gene_feature_set if args.use_gene_expression else None,
-        "cell_feature_view": resolve_cell_feature_view(args) if args.use_gene_expression else None,
+        "bio_context": args.bio_context if args.use_gene_expression else None,
+        "pathway_dim": gene_dim,
+        "mlp0_out_dim": resolve_mlp0_out_dim(args),
+        "normalize_pathways": args.normalize_pathways,
         "holdout_test_fraction": args.holdout_test_fraction,
         "holdout_mode": args.holdout_mode if args.holdout_test_fraction > 0 else None,
         "aggregate_metrics": {
@@ -534,16 +553,16 @@ def main() -> None:
 
     datasets = build_datasets(
         synergy_path=args.synergy_path,
-        cell_expression_path=args.cell_expression_path,
         fallback_pickle_path=args.fallback_pickle_path,
         use_gene_expression=args.use_gene_expression,
-        cell_feature_view=resolve_cell_feature_view(args),
+        bio_context=args.bio_context,
         split_strategy=args.split_strategy,
         smiles_dim=args.smiles_dim,
         train_fraction=args.train_fraction,
         val_fraction=args.val_fraction,
         random_seed=args.seed,
         max_samples=args.max_samples,
+        normalize_pathways=args.normalize_pathways,
     )
 
     output_dir = Path(args.output_dir)

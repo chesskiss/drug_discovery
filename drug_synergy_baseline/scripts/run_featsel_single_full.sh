@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Full-dataset (no --max-samples cap) feature-selection views (627/3171/23808), using
+# codex's EXACT original hyperparameters (see run_pca_sweep_single_full.sh header for
+# the mismatch this fixes: practical_research does NOT match codex's original runs).
+# Writes to outputs/sweep_single_full/.
+#
+#   bash /Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline/scripts/run_featsel_single_full.sh
+set -u
+
+BASE="/Users/arnoldcheskis/Documents/Projects/drug_discovery/drug_synergy_baseline"
+PY="$HOME/.venvs/drug_synergy/bin/python"
+PKL="../data/data_compression/source_data/drugcomb.pkl"
+VIEWS=(2 1 0); declare -A DIM=( [2]=627 [1]=3171 [0]=23808 )
+SPLITS=(random cell_line drug_and_cell_line)
+cd "$BASE" || exit 1
+
+run_one () {
+  local out="$1"; shift
+  if [ -f "$out/metrics.json" ]; then echo "[skip] $out"; return 0; fi
+  echo "[run ] $out"
+  "$PY" -u -m src.train \
+    --output-dir "$out" \
+    --cv-folds 1 --seed 42 \
+    --epochs 10 --lr 0.001 --hidden-dims 512 256 --dropout 0.2 --batch-size 64 \
+    --train-fraction 0.8 --val-fraction 0.1 \
+    "$@" > "/tmp/featsel_full_$(basename "$out").log" 2>&1
+  if grep -q "Saved metrics to" "/tmp/featsel_full_$(basename "$out").log"; then echo "[ ok ] $out"; else echo "[FAIL] $out"; fi
+}
+
+for split in "${SPLITS[@]}"; do
+  for v in "${VIEWS[@]}"; do
+    d=${DIM[$v]}
+    run_one "outputs/sweep_single_full/featsel${d}_${split}" \
+      --split-strategy "$split" \
+      --synergy-path "$PKL" \
+      --fallback-pickle-path "$PKL" \
+      --cell-feature-view "$v"
+  done
+done
+echo "=== FULL-DATASET FEATSEL SINGLE-SPLIT COMPLETE ==="

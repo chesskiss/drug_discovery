@@ -9,6 +9,12 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from .bio_context import (
+    apply_pathway_normalizer,
+    fit_pathway_normalizer,
+    load_bio_context_matrix,
+    project_expression,
+)
 from .data_loading import load_expression_lookup, load_synergy_table
 
 
@@ -51,25 +57,34 @@ class DatasetBundle:
 
 def load_aligned_synergy_and_expression(
     synergy_path: str,
-    cell_expression_path: str | None,
     fallback_pickle_path: str | None,
     *,
-    cell_feature_view: int = 0,
+    bio_context: str = "progeny",
     use_gene_expression: bool = True,
     max_samples: int | None = None,
 ) -> tuple[pd.DataFrame, dict[str, np.ndarray], int]:
+    """Load synergy rows plus per-cell-line PATHWAY ACTIVITIES.
+
+    The cell-line branch is always built from the raw 23,808-dim view (`CellLine[0]`)
+    projected through a fixed bio-context matrix -- there is no PCA/compressed-CSV path
+    in this architecture. The returned `gene_dim` is the pathway dimension (MLP0's
+    input width), not a compressed gene count.
+    """
     synergy_df = load_synergy_table(synergy_path)
 
     if use_gene_expression:
-        expression_lookup = load_expression_lookup(
-            cell_expression_path=cell_expression_path,
+        raw_lookup = load_expression_lookup(
+            cell_expression_path=None,
             fallback_pickle_path=fallback_pickle_path,
-            feature_view_index=cell_feature_view,
+            feature_view_index=0,  # raw 23808-dim axis the bio-context matrices align to
         )
-        synergy_df = synergy_df[synergy_df["cell_line"].isin(expression_lookup)].copy()
-        if not expression_lookup:
+        if not raw_lookup:
             raise ValueError("Expression lookup is empty after loading gene-expression features.")
-        gene_dim = len(next(iter(expression_lookup.values())))
+
+        weights, _pathway_names = load_bio_context_matrix(bio_context)
+        expression_lookup = project_expression(raw_lookup, weights)
+        synergy_df = synergy_df[synergy_df["cell_line"].isin(expression_lookup)].copy()
+        gene_dim = weights.shape[0]
     else:
         expression_lookup = {}
         gene_dim = 0
@@ -402,7 +417,18 @@ def build_dataset_bundle_from_rows(
     *,
     smiles_dim: int = 256,
     gene_dim: int = 0,
+    normalize_pathways: str = "zscore",
 ) -> DatasetBundle:
+    # Fit the pathway z-score on TRAIN cell lines only, then apply it everywhere. This
+    # is the natural leak-free seam: it is the first point where the split is known, so
+    # held-out cell lines never influence the feature scaling. Raw pathway activities
+    # are ~1e4x larger than the L2-normalised drug features, so this is required for
+    # the two branches to be comparable, not cosmetic.
+    if normalize_pathways == "zscore" and gene_dim > 0 and expression_lookup:
+        train_cell_lines = set(train_rows["cell_line"].astype(str))
+        mean, std = fit_pathway_normalizer(expression_lookup, train_cell_lines)
+        expression_lookup = apply_pathway_normalizer(expression_lookup, mean, std)
+
     train_dataset = DrugSynergyDataset(train_rows, expression_lookup, smiles_dim=smiles_dim, gene_dim=gene_dim)
     val_dataset = DrugSynergyDataset(val_rows, expression_lookup, smiles_dim=smiles_dim, gene_dim=gene_dim)
     test_dataset = DrugSynergyDataset(test_rows, expression_lookup, smiles_dim=smiles_dim, gene_dim=gene_dim)
@@ -473,6 +499,7 @@ def build_cv_dataset_bundle(
     holdout_fraction: float = 0.0,
     holdout_seed: int = 42,
     holdout_mode: str = "instead",
+    normalize_pathways: str = "zscore",
 ) -> DatasetBundle:
     observed_fraction = train_fraction + val_fraction
     if observed_fraction <= 0 or observed_fraction >= 1:
@@ -623,13 +650,16 @@ def build_cv_dataset_bundle(
         expression_lookup=expression_lookup,
         smiles_dim=smiles_dim,
         gene_dim=gene_dim,
+        normalize_pathways=normalize_pathways,
     )
 
     # In "additional" mode the fold keeps its own test set, and the shared holdout
-    # is attached as an extra dataset scored separately by the trainer.
+    # is attached as an extra dataset scored separately by the trainer. It must use the
+    # same train-fitted normalizer the bundle applied, so reuse the bundle's lookup.
     if holdout_enabled and holdout_mode == "additional":
+        holdout_lookup = bundle.train.expression_lookup
         holdout_dataset = DrugSynergyDataset(
-            holdout_df, expression_lookup, smiles_dim=smiles_dim, gene_dim=gene_dim
+            holdout_df, holdout_lookup, smiles_dim=smiles_dim, gene_dim=gene_dim
         )
         bundle = replace(
             bundle,
@@ -642,23 +672,22 @@ def build_cv_dataset_bundle(
 
 def build_datasets(
     synergy_path: str,
-    cell_expression_path: str | None,
     fallback_pickle_path: str | None,
     *,
     use_gene_expression: bool = True,
-    cell_feature_view: int = 0,
+    bio_context: str = "progeny",
     split_strategy: str = "random",
     smiles_dim: int = 256,
     train_fraction: float = 0.8,
     val_fraction: float = 0.1,
     random_seed: int = 42,
     max_samples: int | None = None,
+    normalize_pathways: str = "zscore",
 ) -> DatasetBundle:
     synergy_df, expression_lookup, gene_dim = load_aligned_synergy_and_expression(
         synergy_path=synergy_path,
-        cell_expression_path=cell_expression_path,
         fallback_pickle_path=fallback_pickle_path,
-        cell_feature_view=cell_feature_view,
+        bio_context=bio_context,
         use_gene_expression=use_gene_expression,
         max_samples=max_samples,
     )
@@ -676,4 +705,5 @@ def build_datasets(
         expression_lookup=expression_lookup,
         smiles_dim=smiles_dim,
         gene_dim=gene_dim,
+        normalize_pathways=normalize_pathways,
     )

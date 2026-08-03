@@ -1,0 +1,13 @@
+[project]
+name = "drug-synergy-baseline"
+version = "0.1.0"
+description = "Minimal utilities for a drug synergy baseline project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "PyTDC",
+    "torch",
+]
