@@ -46,9 +46,10 @@ htmlcov/
 drug_synergy_baseline/outputs/
 drug_synergy_baseline/outputs_smoke/
 cell_line_difficulty/outputs/
-
 cell_line_difficulty/outputs_predictive_smoke/
-drug_synergy_baseline/outputs/
+drug_synergy_biocontext/outputs/
+identity_probe/outputs/
+data/data_compression/pca_sweep/
 
 # Too heavy to track, can be re-downloaded from the DrugComb portal if needed.
 data/data_compression/zscore_var_pca_128/data/*
@@ -61,3 +62,6 @@ drug_synergy_baseline/data/
 *.npz
 !data/bio_context/**/*.csv
 !drug_synergy_baseline/results/*.csv
+
+# identity_probe generated outputs
+identity_probe/outputs/
