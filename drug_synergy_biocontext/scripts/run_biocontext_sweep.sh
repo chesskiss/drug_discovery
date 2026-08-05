@@ -53,7 +53,7 @@ run_one () {
   echo "[run ] $out"
   "$PY" -u -m src.train \
     --output-dir "$out" \
-    "${EVAL_ARGS[@]}" "${COMMON_ARGS[@]}" \
+    "${EVAL_ARGS[@]}" ${COMMON_ARGS[@]+"${COMMON_ARGS[@]}"} \
     "$@" > "$log" 2>&1
   if grep -q "$DONE_MARKER" "$log"; then
     echo "[ ok ] $out"

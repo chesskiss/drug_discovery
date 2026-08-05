@@ -22,7 +22,7 @@ for K in "${DIMS[@]}"; do
     --mlp0-out-dim "$K" \
     --split-strategy random \
     --cv-folds 1 --seed 42 --max-samples 2000 --epochs 2 \
-    "${extra[@]}" > "/tmp/smoke_mlp0${K}.log" 2>&1
+    "${extra[@]+"${extra[@]}"}" > "/tmp/smoke_mlp0${K}.log" 2>&1
   if grep -q "Saved metrics to" "/tmp/smoke_mlp0${K}.log"; then
     echo "[ ok ] $out"
   else
